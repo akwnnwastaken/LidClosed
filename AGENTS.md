@@ -25,6 +25,14 @@ never sleeps.
 script:**
 
 ```bash
+./scripts/state.sh    # app, lid-closed mode, keep awake, state file, display timer
+```
+
+It distinguishes an override owned by LidClosed from one set outside it, and ignores
+`caffeinate` processes belonging to other tools (it matches on `-dimsu`, which is ours).
+The raw equivalents, if you need them individually:
+
+```bash
 /usr/bin/pmset -g | grep -i SleepDisabled                       # 0 = normal, 1 = disabled
 cat "$HOME/Library/Application Support/LidClosed/state.json"     # our ownership marker
 pgrep -x LidClosed                                               # is an instance running
@@ -46,8 +54,9 @@ marker is the only thing that lets the next launch recover.
 
 ```bash
 swift build -c debug          # or -c release
-swift test                    # 40 tests, no privileged calls, no real state file touched
+swift test                    # 47 tests, no privileged calls, no real state file touched
 ./scripts/install.sh          # build + bundle + ad-hoc sign + install to /Applications
+./scripts/state.sh            # read-only: what the app is actually doing right now
 ```
 
 `install.sh` requires `sudo` for the `/Applications` step and **skips installation entirely
