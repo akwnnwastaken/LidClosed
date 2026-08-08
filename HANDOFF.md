@@ -16,7 +16,7 @@ queued.**
 
 | Round | Outcome |
 |-------|---------|
-| First review (25 findings) | 22 fixed, 3 deferred |
+| First review (25 findings) | 22 fixed, 3 deferred (one later done) |
 | Second review (11 findings, after the first round) | 11 fixed |
 | Manual test matrix (7 scenarios, real auth dialog) | 7/7 passed |
 | Remaining-work round (single instance, caffeinate, quoting) | 3 closed |
@@ -24,6 +24,12 @@ queued.**
 
 Narrative of every change: [WALKTHROUGH.md](WALKTHROUGH.md). Everything still open, all of it
 by choice: [TODO.md](TODO.md).
+
+The counts do not add up on their own: of the three items deferred after the first review, the
+missing AppleScript quoting helper was later promoted out of the deferred list and done in
+`54f16f0`, because it converted a convention into a structural guarantee for very little work.
+Two remain deferred — the debug-only `get-task-allow` entitlement and hard-coded version
+numbers.
 
 ```
 56e5a5a  Grey out Keep Awake while Lid Closed Mode is on
