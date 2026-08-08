@@ -10,8 +10,7 @@ let package = Package(
             path: "Sources",
             linkerSettings: [
                 .linkedFramework("IOKit"),
-                .linkedFramework("AppKit"),
-                .linkedFramework("ServiceManagement")
+                .linkedFramework("AppKit")
             ]
         )
     ]

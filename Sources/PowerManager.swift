@@ -93,7 +93,7 @@ final class PowerManager {
             process.waitUntilExit()
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
             if let output = String(data: data, encoding: .utf8) {
-                return output.contains("SleepDisabled           1")
+                return output.range(of: #"SleepDisabled\s+1"#, options: .regularExpression) != nil
             }
         } catch {
             NSLog("[LidClosed] Failed to check pmset status: \(error)")
@@ -105,16 +105,24 @@ final class PowerManager {
 
     /// Install handlers for SIGTERM, SIGINT, SIGHUP to ensure cleanup on forced termination.
     private func installSignalHandlers() {
-        let handler: @convention(c) (Int32) -> Void = { signal in
-            NSLog("[LidClosed] Received signal \(signal), cleaning up...")
-            PowerManager.shared.forceCleanup()
-            exit(0)
+        // Use DispatchSource for signal handling — safer than C signal() as it
+        // dispatches to a queue instead of interrupting arbitrary code.
+        for sig in [SIGTERM, SIGINT, SIGHUP] {
+            let source = DispatchSource.makeSignalSource(signal: sig, queue: .main)
+            source.setEventHandler {
+                NSLog("[LidClosed] Received signal \(sig), cleaning up...")
+                PowerManager.shared.forceCleanup()
+                exit(0)
+            }
+            source.resume()
+            // Ignore the default signal behavior so our handler runs
+            signal(sig, SIG_IGN)
+            signalSources.append(source)
         }
-
-        signal(SIGTERM, handler)
-        signal(SIGINT, handler)
-        signal(SIGHUP, handler)
     }
+
+    /// Keeps DispatchSource references alive.
+    private var signalSources: [any DispatchSourceSignal] = []
 
     /// Emergency cleanup that doesn't check internal state — just force re-enables sleep.
     func forceCleanup() {
@@ -123,8 +131,8 @@ final class PowerManager {
             IOPMAssertionRelease(assertionID)
         }
 
-        // Force re-enable sleep via a direct Process call (no AppleScript, no auth dialog)
-        // This uses the cached admin credentials if available
+        // Try to re-enable sleep. If no auth is cached, this will fail silently —
+        // the state file ensures next launch will prompt and clean up.
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
         process.arguments = ["-e", "do shell script \"pmset disablesleep 0\" with administrator privileges"]
@@ -132,11 +140,11 @@ final class PowerManager {
         do {
             try process.run()
             process.waitUntilExit()
+            removeStateFile()
         } catch {
-            NSLog("[LidClosed] Force cleanup failed: \(error)")
+            // State file intentionally kept so next launch triggers cleanup
+            NSLog("[LidClosed] Force cleanup could not run pmset — will recover on next launch")
         }
-
-        removeStateFile()
     }
 
     // MARK: - IOKit Power Assertions

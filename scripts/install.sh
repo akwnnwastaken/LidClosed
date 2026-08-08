@@ -30,24 +30,35 @@ cp "Resources/Info.plist" "${DIST_DIR}/${BUNDLE_NAME}/Contents/"
 # Create .icns icon from PNG
 if [ -f "${ICON_SOURCE}" ]; then
     echo "🎨 Creating app icon..."
+
+    # First, re-encode PNG to ensure compatibility with iconutil
+    CLEAN_PNG="${DIST_DIR}/AppIcon_clean.png"
+    sips -s format png "${ICON_SOURCE}" --out "${CLEAN_PNG}" > /dev/null 2>&1
+
     mkdir -p "${ICONSET_DIR}"
 
-    # Generate all required icon sizes
-    sips -z 16 16     "${ICON_SOURCE}" --out "${ICONSET_DIR}/icon_16x16.png"      > /dev/null 2>&1
-    sips -z 32 32     "${ICON_SOURCE}" --out "${ICONSET_DIR}/icon_16x16@2x.png"   > /dev/null 2>&1
-    sips -z 32 32     "${ICON_SOURCE}" --out "${ICONSET_DIR}/icon_32x32.png"      > /dev/null 2>&1
-    sips -z 64 64     "${ICON_SOURCE}" --out "${ICONSET_DIR}/icon_32x32@2x.png"   > /dev/null 2>&1
-    sips -z 128 128   "${ICON_SOURCE}" --out "${ICONSET_DIR}/icon_128x128.png"    > /dev/null 2>&1
-    sips -z 256 256   "${ICON_SOURCE}" --out "${ICONSET_DIR}/icon_128x128@2x.png" > /dev/null 2>&1
-    sips -z 256 256   "${ICON_SOURCE}" --out "${ICONSET_DIR}/icon_256x256.png"    > /dev/null 2>&1
-    sips -z 512 512   "${ICON_SOURCE}" --out "${ICONSET_DIR}/icon_256x256@2x.png" > /dev/null 2>&1
-    sips -z 512 512   "${ICON_SOURCE}" --out "${ICONSET_DIR}/icon_512x512.png"    > /dev/null 2>&1
-    sips -z 1024 1024 "${ICON_SOURCE}" --out "${ICONSET_DIR}/icon_512x512@2x.png" > /dev/null 2>&1
+    # Generate all required icon sizes from the clean PNG
+    declare -a SIZES=("16" "32" "64" "128" "256" "512" "1024")
+    for size in "${SIZES[@]}"; do
+        sips -z "${size}" "${size}" "${CLEAN_PNG}" --out "${ICONSET_DIR}/icon_${size}x${size}.png" > /dev/null 2>&1
+    done
+
+    # Rename to standard iconset naming convention
+    cp "${ICONSET_DIR}/icon_32x32.png"     "${ICONSET_DIR}/icon_16x16@2x.png"
+    cp "${ICONSET_DIR}/icon_64x64.png"     "${ICONSET_DIR}/icon_32x32@2x.png"
+    cp "${ICONSET_DIR}/icon_256x256.png"   "${ICONSET_DIR}/icon_128x128@2x.png"
+    cp "${ICONSET_DIR}/icon_512x512.png"   "${ICONSET_DIR}/icon_256x256@2x.png"
+    cp "${ICONSET_DIR}/icon_1024x1024.png" "${ICONSET_DIR}/icon_512x512@2x.png"
+    rm -f "${ICONSET_DIR}/icon_64x64.png" "${ICONSET_DIR}/icon_1024x1024.png"
 
     # Convert iconset to icns
-    iconutil -c icns "${ICONSET_DIR}" -o "${DIST_DIR}/${BUNDLE_NAME}/Contents/Resources/AppIcon.icns"
-    rm -rf "${ICONSET_DIR}"
-    echo "  ✅ Icon created"
+    if iconutil -c icns "${ICONSET_DIR}" -o "${DIST_DIR}/${BUNDLE_NAME}/Contents/Resources/AppIcon.icns" 2>/dev/null; then
+        echo "  ✅ Icon created"
+    else
+        echo "  ⚠️  iconutil failed — app will use default icon"
+    fi
+
+    rm -rf "${ICONSET_DIR}" "${CLEAN_PNG}"
 else
     echo "  ⚠️  No icon found at ${ICON_SOURCE}, skipping icon"
 fi
