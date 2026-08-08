@@ -1,214 +1,173 @@
 import Foundation
-import IOKit
-import IOKit.pwr_mgt
+import AppKit
 
-/// Manages macOS power assertions and system sleep prevention.
-/// Uses both IOKit assertions and pmset to reliably prevent sleep when the lid is closed.
+/// Struct representing the state file contents to verify ownership
+struct LidClosedState: Codable {
+    let pid: Int32
+    let timestamp: TimeInterval
+}
+
+/// Manages system sleep prevention using pmset.
+@MainActor
 final class PowerManager {
-
     static let shared = PowerManager()
 
-    private var assertionID: IOPMAssertionID = 0
-    private var isAssertionActive = false
-    private var isSleepDisabled = false
+    private let runner: CommandRunner
+    
+    // Keeps DispatchSource references alive
+    private var signalSources: [any DispatchSourceSignal] = []
 
-    /// File used to track whether disablesleep is active across sessions.
-    /// If the app crashes, next launch will detect this and clean up.
-    private let stateFilePath: String = {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        return "\(home)/.lidclosed_active"
+    /// File used to track whether our app activated disablesleep.
+    private let stateFilePath: URL = {
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let dir = appSupport.appendingPathComponent("LidClosed")
+        // Ensure directory exists
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("state.json")
+    }()
+    
+    private let legacyStateFilePath: URL = {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        return home.appendingPathComponent(".lidclosed_active")
     }()
 
-    private init() {
+    // Allow injecting a test runner
+    init(runner: CommandRunner = DefaultCommandRunner()) {
+        self.runner = runner
+        migrateLegacyStateFile()
         cleanupStaleState()
         installSignalHandlers()
     }
 
     // MARK: - Public API
 
-    /// Activates lid-closed mode: prevents system sleep even when the lid is closed.
+    /// True if pmset disablesleep is currently 1 on the system.
+    var isSleepDisabledSystemWide: Bool {
+        do {
+            let (status, output) = try runner.run(
+                executableURL: URL(fileURLWithPath: "/usr/bin/pmset"),
+                arguments: ["-g"]
+            )
+            guard status == 0 else { return false }
+            return output.range(of: #"SleepDisabled[ \t]+1\b"#, options: .regularExpression) != nil
+        } catch {
+            NSLog("[LidClosed] Failed to check pmset status: \(error)")
+            return false
+        }
+    }
+    
+    /// True if we have an active state file indicating we own the disablesleep override.
+    var isOwnedByUs: Bool {
+        return FileManager.default.fileExists(atPath: stateFilePath.path)
+    }
+
+    /// Activates lid-closed mode: prevents system sleep.
     /// Returns true if activation was successful.
     @discardableResult
     func activate() -> Bool {
-        guard !isAssertionActive else { return true }
-
-        // Step 1: Create IOKit power assertion to prevent idle system sleep
-        let assertionOk = createPowerAssertion()
-
-        // Step 2: Disable sleep via pmset (this is the critical part for lid-close)
-        let pmsetOk = disableSleep()
-
-        if assertionOk && pmsetOk {
+        guard !isOwnedByUs else { return true }
+        
+        // Disable sleep via pmset
+        let success = runPrivilegedCommand("/usr/bin/pmset disablesleep 1")
+        
+        if success {
             writeStateFile()
+            NSLog("[LidClosed] Activated sleep override successfully.")
             return true
-        } else if assertionOk && !pmsetOk {
-            // IOKit assertion alone won't prevent lid-close sleep.
-            // User probably cancelled the password dialog.
-            releasePowerAssertion()
+        } else {
+            NSLog("[LidClosed] Activation failed (user likely cancelled auth).")
+            showAuthFailedAlert()
             return false
         }
-
-        return false
     }
 
-    /// Deactivates lid-closed mode: allows the system to sleep normally again.
+    /// Deactivates lid-closed mode.
     func deactivate() {
-        releasePowerAssertion()
-        enableSleep()
-        removeStateFile()
-    }
-
-    /// Returns whether lid-closed mode is currently active.
-    var isActive: Bool {
-        return isAssertionActive && isSleepDisabled
+        guard isOwnedByUs else { return }
+        
+        let success = runPrivilegedCommand("/usr/bin/pmset disablesleep 0")
+        if success {
+            removeStateFile()
+            NSLog("[LidClosed] Deactivated sleep override successfully.")
+        } else {
+            NSLog("[LidClosed] Deactivation failed (user likely cancelled auth).")
+            showAuthFailedAlert()
+        }
     }
 
     // MARK: - Stale State Recovery
 
-    /// On launch, check if a previous session crashed without cleaning up.
-    /// If so, re-enable sleep immediately.
-    private func cleanupStaleState() {
-        if FileManager.default.fileExists(atPath: stateFilePath) {
-            NSLog("[LidClosed] Detected stale state from previous crash — re-enabling sleep")
-            // Run non-privileged check first to see if disablesleep is actually set
-            if isDisableSleepActive() {
-                // Force re-enable without tracking state
-                runPrivilegedCommand("pmset disablesleep 0")
-            }
-            removeStateFile()
+    private func migrateLegacyStateFile() {
+        if FileManager.default.fileExists(atPath: legacyStateFilePath.path) {
+            writeStateFile()
+            try? FileManager.default.removeItem(at: legacyStateFilePath)
+            NSLog("[LidClosed] Migrated legacy state file.")
         }
     }
 
-    /// Checks current pmset settings to see if disablesleep is active.
-    private func isDisableSleepActive() -> Bool {
-        let process = Process()
-        let pipe = Pipe()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/pmset")
-        process.arguments = ["-g"]
-        process.standardOutput = pipe
-        process.standardError = FileHandle.nullDevice
-
-        do {
-            try process.run()
-            process.waitUntilExit()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            if let output = String(data: data, encoding: .utf8) {
-                return output.range(of: #"SleepDisabled\s+1"#, options: .regularExpression) != nil
+    /// On launch, check if a previous session crashed without cleaning up.
+    private func cleanupStaleState() {
+        if isOwnedByUs {
+            NSLog("[LidClosed] Detected stale state from previous session. Attempting recovery...")
+            if isSleepDisabledSystemWide {
+                forceCleanup()
+            } else {
+                // pmset is 0, but we have a state file. System probably reset it, or external interference.
+                // Just remove our state file.
+                removeStateFile()
             }
-        } catch {
-            NSLog("[LidClosed] Failed to check pmset status: \(error)")
         }
-        return false
     }
 
     // MARK: - Signal Handlers
 
-    /// Install handlers for SIGTERM, SIGINT, SIGHUP to ensure cleanup on forced termination.
     private func installSignalHandlers() {
-        // Use DispatchSource for signal handling — safer than C signal() as it
-        // dispatches to a queue instead of interrupting arbitrary code.
         for sig in [SIGTERM, SIGINT, SIGHUP] {
+            // 1. Ignore default behavior immediately
+            signal(sig, SIG_IGN)
+            
+            // 2. Setup DispatchSource
             let source = DispatchSource.makeSignalSource(signal: sig, queue: .main)
             source.setEventHandler {
-                NSLog("[LidClosed] Received signal \(sig), cleaning up...")
-                PowerManager.shared.forceCleanup()
-                exit(0)
+                MainActor.assumeIsolated {
+                    NSLog("[LidClosed] Received signal \(sig), attempting cleanup...")
+                    PowerManager.shared.forceCleanup()
+                    exit(0)
+                }
             }
             source.resume()
-            // Ignore the default signal behavior so our handler runs
-            signal(sig, SIG_IGN)
             signalSources.append(source)
         }
     }
 
-    /// Keeps DispatchSource references alive.
-    private var signalSources: [any DispatchSourceSignal] = []
-
-    /// Emergency cleanup that doesn't check internal state — just force re-enables sleep.
+    /// Silent cleanup using standard Process (no GUI auth dialog).
+    /// Used during crashes or signal termination where UI is unavailable.
     func forceCleanup() {
-        // Release IOKit assertion if we have one
-        if assertionID != 0 {
-            IOPMAssertionRelease(assertionID)
-        }
-
-        // Try to re-enable sleep. If no auth is cached, this will fail silently —
-        // the state file ensures next launch will prompt and clean up.
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        process.arguments = ["-e", "do shell script \"pmset disablesleep 0\" with administrator privileges"]
-
+        guard isOwnedByUs else { return }
+        
         do {
-            try process.run()
-            process.waitUntilExit()
-            removeStateFile()
+            let (status, _) = try runner.run(
+                executableURL: URL(fileURLWithPath: "/usr/bin/osascript"),
+                arguments: ["-e", "do shell script \"/usr/bin/pmset disablesleep 0\" with administrator privileges"]
+            )
+            
+            if status == 0 {
+                removeStateFile()
+                NSLog("[LidClosed] Force cleanup successful.")
+            } else {
+                NSLog("[LidClosed] Force cleanup failed (status \(status)) - state file preserved for next launch.")
+            }
         } catch {
-            // State file intentionally kept so next launch triggers cleanup
-            NSLog("[LidClosed] Force cleanup could not run pmset — will recover on next launch")
+            NSLog("[LidClosed] Force cleanup error: \(error) - state file preserved for next launch.")
         }
     }
 
-    // MARK: - IOKit Power Assertions
+    // MARK: - Privileged Execution
 
-    private func createPowerAssertion() -> Bool {
-        let reasonForActivity = "LidClosed: Preventing system sleep with lid closed" as CFString
-
-        let result = IOPMAssertionCreateWithName(
-            kIOPMAssertPreventUserIdleSystemSleep as CFString,
-            IOPMAssertionLevel(kIOPMAssertionLevelOn),
-            reasonForActivity,
-            &assertionID
-        )
-
-        if result == kIOReturnSuccess {
-            isAssertionActive = true
-            NSLog("[LidClosed] Power assertion created (ID: \(assertionID))")
-            return true
-        } else {
-            NSLog("[LidClosed] Failed to create power assertion: \(result)")
-            return false
-        }
-    }
-
-    private func releasePowerAssertion() {
-        guard isAssertionActive else { return }
-
-        let result = IOPMAssertionRelease(assertionID)
-        if result == kIOReturnSuccess {
-            isAssertionActive = false
-            assertionID = 0
-            NSLog("[LidClosed] Power assertion released")
-        } else {
-            NSLog("[LidClosed] Failed to release power assertion: \(result)")
-        }
-    }
-
-    // MARK: - pmset Sleep Control
-
-    /// Disables system sleep using pmset. Returns true if successful.
-    @discardableResult
-    private func disableSleep() -> Bool {
-        let success = runPrivilegedCommand("pmset disablesleep 1")
-        if success {
-            isSleepDisabled = true
-            NSLog("[LidClosed] System sleep disabled via pmset")
-        } else {
-            NSLog("[LidClosed] Failed to disable sleep (user may have cancelled)")
-        }
-        return success
-    }
-
-    /// Re-enables system sleep using pmset.
-    private func enableSleep() {
-        guard isSleepDisabled else { return }
-        runPrivilegedCommand("pmset disablesleep 0")
-        isSleepDisabled = false
-        NSLog("[LidClosed] System sleep re-enabled via pmset")
-    }
-
-    /// Runs a shell command with administrator privileges using AppleScript's built-in auth dialog.
-    /// Returns true if the command executed without errors.
+    /// Runs a shell command with administrator privileges via AppleScript.
     @discardableResult
     private func runPrivilegedCommand(_ command: String) -> Bool {
+        // Warning: Do not pass user input into `command` here.
         let script = """
         do shell script "\(command)" with administrator privileges
         """
@@ -228,24 +187,30 @@ final class PowerManager {
     // MARK: - State File Management
 
     private func writeStateFile() {
-        FileManager.default.createFile(
-            atPath: stateFilePath,
-            contents: "active".data(using: .utf8)
-        )
+        let state = LidClosedState(pid: ProcessInfo.processInfo.processIdentifier, timestamp: Date().timeIntervalSince1970)
+        do {
+            let data = try JSONEncoder().encode(state)
+            try data.write(to: stateFilePath)
+        } catch {
+            NSLog("[LidClosed] Failed to write state file: \(error)")
+        }
     }
 
     private func removeStateFile() {
-        try? FileManager.default.removeItem(atPath: stateFilePath)
+        try? FileManager.default.removeItem(at: stateFilePath)
     }
-
-    // MARK: - Cleanup
-
-    /// Ensures sleep is re-enabled when the app terminates normally.
-    func cleanup() {
-        deactivate()
-    }
-
-    deinit {
-        cleanup()
+    
+    // MARK: - Alerts
+    
+    private func showAuthFailedAlert() {
+        let alert = NSAlert()
+        alert.messageText = "Authentication Failed"
+        alert.informativeText = "LidClosed requires administrator privileges to modify system sleep settings. The operation was cancelled or failed."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        
+        // Ensure it comes to the front
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
     }
 }

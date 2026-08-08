@@ -12,6 +12,11 @@ let package = Package(
                 .linkedFramework("IOKit"),
                 .linkedFramework("AppKit")
             ]
+        ),
+        .testTarget(
+            name: "LidClosedTests",
+            dependencies: ["LidClosed"],
+            path: "Tests"
         )
     ]
 )

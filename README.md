@@ -26,18 +26,15 @@ LidClosed sits in your menu bar and lets you toggle **lid-closed mode** with a s
 
 ## How it works
 
-LidClosed uses two mechanisms to reliably prevent sleep:
-
-1. **IOKit Power Assertions** — Creates a system-level assertion that prevents idle sleep
-2. **`pmset disablesleep`** — Disables system sleep entirely, including lid-close sleep (requires admin password on activation)
+LidClosed uses `pmset disablesleep 1` to disable system sleep entirely, including lid-close sleep (requires admin password on activation). 
 
 When you quit the app or disable the mode, sleep behavior is fully restored.
 
 ### Safety Features
 
-- **Crash recovery** — If the app crashes, the next launch automatically detects and re-enables sleep
-- **Signal handlers** — SIGTERM/SIGINT/SIGHUP are caught to ensure cleanup on forced termination
-- **State verification** — If the user cancels the password prompt, the partial activation is rolled back
+- **State Tracking** — The app writes a state file to `~/Library/Application Support/LidClosed` when it activates the override. It only attempts to disable the override if it knows it owns it.
+- **Crash Recovery** — If the app crashes or is force-killed, the next launch automatically detects the stale state file and re-enables sleep.
+- **Security** — The installation script sets root ownership (`root:wheel`) on the `.app` bundle to prevent local privilege escalation, and ad-hoc signs the application.
 
 ## Installation
 
@@ -49,7 +46,7 @@ cd LidClosed
 ./scripts/install.sh
 ```
 
-This builds the app, creates a `.app` bundle with an icon, and installs it to `/Applications`. After installation, you can find it with **Spotlight** (Cmd+Space → "LidClosed").
+This builds the app, creates a signed `.app` bundle with an icon, and securely installs it to `/Applications` (requires `sudo`). After installation, you can find it with **Spotlight** (Cmd+Space → "LidClosed").
 
 ### Manual Build
 
@@ -82,15 +79,23 @@ The binary will be at `.build/release/LidClosed`.
 - Swift 5.9+
 - Admin privileges (for `pmset` commands)
 
-## Troubleshooting
+## Troubleshooting & Uninstallation
 
-If the app crashes or is force-killed and your Mac no longer sleeps:
+> [!WARNING]
+> LidClosed modifies a **global system setting**. If you delete the app while it is Active, your Mac will never sleep again until you manually revert the setting.
+
+**Always click "Disable Lid Closed Mode" before uninstalling the app.**
+
+If you forgot, or if the app crashes and you don't want to launch it again, open Terminal and run:
 
 ```bash
 sudo pmset disablesleep 0
 ```
 
-This manually re-enables sleep. The app also does this automatically on the next launch.
+To fully uninstall:
+1. Ensure sleep is re-enabled (see above).
+2. `sudo rm -rf /Applications/LidClosed.app`
+3. `rm -rf ~/Library/Application Support/LidClosed`
 
 ## License
 

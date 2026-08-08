@@ -30,7 +30,5 @@
     <true/>
     <key>NSHighResolutionCapable</key>
     <true/>
-    <key>NSAppleEventsUsageDescription</key>
-    <string>LidClosed needs to run privileged commands to prevent system sleep when the lid is closed.</string>
 </dict>
 </plist>
