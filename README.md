@@ -1,6 +1,10 @@
 # LidClosed
 
 <p align="center">
+  <img src="Resources/AppIcon.png" width="128" height="128" alt="LidClosed Icon">
+</p>
+
+<p align="center">
   <strong>Keep your Mac awake with the lid closed.</strong>
 </p>
 
@@ -25,48 +29,52 @@ LidClosed sits in your menu bar and lets you toggle **lid-closed mode** with a s
 LidClosed uses two mechanisms to reliably prevent sleep:
 
 1. **IOKit Power Assertions** — Creates a system-level assertion that prevents idle sleep
-2. **`pmset disablesleep`** — Disables system sleep entirely (requires admin password on activation)
+2. **`pmset disablesleep`** — Disables system sleep entirely, including lid-close sleep (requires admin password on activation)
 
 When you quit the app or disable the mode, sleep behavior is fully restored.
 
+### Safety Features
+
+- **Crash recovery** — If the app crashes, the next launch automatically detects and re-enables sleep
+- **Signal handlers** — SIGTERM/SIGINT/SIGHUP are caught to ensure cleanup on forced termination
+- **State verification** — If the user cancels the password prompt, the partial activation is rolled back
+
 ## Installation
 
-### Build from source
+### Quick Install (Build + Install to /Applications)
 
 ```bash
-git clone https://github.com/yourusername/LidClosed.git
+git clone https://github.com/akwnnwastaken/LidClosed.git
+cd LidClosed
+./scripts/install.sh
+```
+
+This builds the app, creates a `.app` bundle with an icon, and installs it to `/Applications`. After installation, you can find it with **Spotlight** (Cmd+Space → "LidClosed").
+
+### Manual Build
+
+```bash
+git clone https://github.com/akwnnwastaken/LidClosed.git
 cd LidClosed
 swift build -c release
 ```
 
 The binary will be at `.build/release/LidClosed`.
 
-### Run
-
-```bash
-.build/release/LidClosed
-```
-
-Or copy it to your Applications folder:
-
-```bash
-cp .build/release/LidClosed /usr/local/bin/lidclosed
-```
-
 ## Usage
 
-1. Launch LidClosed — it appears as a laptop icon in your menu bar
-2. Click the icon → **Enable Lid Closed Mode**
-3. Enter your admin password when prompted (required for `pmset`)
+1. Launch **LidClosed** — it appears as a laptop icon in your menu bar
+2. Click the icon → **▶ Enable Lid Closed Mode**
+3. Enter your admin password when prompted
 4. Close your lid — your Mac stays awake! ☕
-5. Click the icon → **Disable Lid Closed Mode** to return to normal
+5. Click the icon → **⏹ Disable Lid Closed Mode** to return to normal behavior
 
-### Menu Bar Icons
+### Menu Bar States
 
-| State | Icon | Meaning |
-|-------|------|---------|
+| State | Icon | Description |
+|-------|------|-------------|
 | Inactive | 🔒💻 | Normal sleep behavior |
-| Active | 🔓💻 | Lid closed mode — Mac won't sleep |
+| Active | 🔓💻 | Mac won't sleep when lid is closed |
 
 ## Requirements
 
@@ -74,11 +82,15 @@ cp .build/release/LidClosed /usr/local/bin/lidclosed
 - Swift 5.9+
 - Admin privileges (for `pmset` commands)
 
-## Safety
+## Troubleshooting
 
-- Sleep is **always re-enabled** when you quit the app
-- The app registers for termination notifications to ensure cleanup
-- If the app crashes, run `sudo pmset disablesleep 0` to manually re-enable sleep
+If the app crashes or is force-killed and your Mac no longer sleeps:
+
+```bash
+sudo pmset disablesleep 0
+```
+
+This manually re-enables sleep. The app also does this automatically on the next launch.
 
 ## License
 
