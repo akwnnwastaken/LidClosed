@@ -574,15 +574,6 @@ final class StatusTextTests: XCTestCase {
         )
     }
 
-    /// Measured: pmset disablesleep also suppresses display sleep, so Keep Awake contributes
-    /// nothing on top of lid-closed mode and the line must not pretend otherwise.
-    func testBothActiveSaysKeepAwakeIsRedundant() {
-        XCTAssertEqual(
-            text(sleepDisabled: true, owned: true, keepingAwake: true),
-            "● Awake — even with the lid closed — Keep Awake adds nothing"
-        )
-    }
-
     func testExternalOverrideAlone() {
         XCTAssertEqual(
             text(sleepDisabled: true, owned: false, keepingAwake: false),
@@ -590,26 +581,41 @@ final class StatusTextTests: XCTestCase {
         )
     }
 
-    func testExternalOverridePlusKeepAwake() {
+    /// Keep Awake is stopped whenever sleep is already disabled, so it must not change the
+    /// line in that state.
+    func testKeepAwakeDoesNotAlterTheLineWhileSleepIsDisabled() {
+        XCTAssertEqual(
+            text(sleepDisabled: true, owned: true, keepingAwake: true),
+            text(sleepDisabled: true, owned: true, keepingAwake: false)
+        )
         XCTAssertEqual(
             text(sleepDisabled: true, owned: false, keepingAwake: true),
-            "● Sleep disabled outside LidClosed — Keep Awake adds nothing"
+            text(sleepDisabled: true, owned: false, keepingAwake: false)
         )
     }
 
-    /// Every combination must produce a distinct line: a state the user cannot distinguish
-    /// is a state they cannot act on.
-    func testAllSixCombinationsAreDistinct() {
-        var seen = Set<String>()
-        for sleepDisabled in [false, true] {
-            for owned in [false, true] {
-                for keepingAwake in [false, true] {
-                    // Ownership is only meaningful while sleep is disabled.
-                    guard sleepDisabled || !owned else { continue }
-                    seen.insert(text(sleepDisabled: sleepDisabled, owned: owned, keepingAwake: keepingAwake))
-                }
-            }
-        }
-        XCTAssertEqual(seen.count, 6)
+    /// The item is unavailable while lid-closed mode is on, and says why.
+    func testKeepAwakeTitleExplainsWhyItIsUnavailable() {
+        XCTAssertEqual(
+            StatusBarController.keepAwakeTitle(isSleepDisabled: false),
+            "Keep Awake (Lid Open)"
+        )
+        XCTAssertEqual(
+            StatusBarController.keepAwakeTitle(isSleepDisabled: true),
+            "Keep Awake — covered by Lid Closed Mode"
+        )
+    }
+
+    /// Every reachable state must produce a distinct line: a state the user cannot
+    /// distinguish is a state they cannot act on. Four are reachable, because Keep Awake is
+    /// stopped whenever sleep is already disabled.
+    func testEveryReachableStateHasADistinctLine() {
+        let reachable = [
+            text(sleepDisabled: false, owned: false, keepingAwake: false),
+            text(sleepDisabled: false, owned: false, keepingAwake: true),
+            text(sleepDisabled: true, owned: true, keepingAwake: false),
+            text(sleepDisabled: true, owned: false, keepingAwake: false)
+        ]
+        XCTAssertEqual(Set(reachable).count, 4)
     }
 }

@@ -229,5 +229,9 @@ Two things worth keeping from this:
   afterwards.
 
 Reverted as a result: the README comparison row, the status-line strings that promised
-"display stays on" / "display still sleeps", and the corresponding AGENTS.md entry. The status
-line now says "Keep Awake adds nothing" while lid-closed mode is on.
+"display stays on" / "display still sleeps", and the corresponding AGENTS.md entry.
+
+Acted on as well: since Keep Awake demonstrably adds nothing while lid-closed mode is on, it is
+now greyed out there and relabelled "Keep Awake — covered by Lid Closed Mode", and a running
+`caffeinate` child is stopped. Greying alone would have recreated a familiar bug — a checked
+item the user cannot uncheck — so the two changes only make sense together.

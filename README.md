@@ -48,7 +48,7 @@ Reach for this one when you do not actually need clamshell operation: it needs *
 
 Disabling lid-closed mode, or quitting from the menu, prompts for your password again and restores normal sleep behavior. Keep Awake just stops.
 
-Lid Closed Mode covers strictly more than Keep Awake — measured, not assumed: with `SleepDisabled 1` and nothing else holding the display, the Mac sat idle for 207 seconds against a 60-second `displaysleep` timer and the screen never turned off. So switching both on is harmless but redundant, and the status line will tell you so.
+Lid Closed Mode covers strictly more than Keep Awake — measured, not assumed: with `SleepDisabled 1` and nothing else holding the display, the Mac sat idle for 207 seconds against a 60-second `displaysleep` timer and the screen never turned off. Because of that the two are never both on: enabling Lid Closed Mode disables Keep Awake, since it would contribute nothing.
 
 Keep Awake is the better choice whenever you do not need the lid closed, because it buys the same wakefulness without an admin password, without touching a persistent system setting, and without anything to clean up if the app dies.
 
@@ -107,11 +107,9 @@ The binary will be at `.build/release/LidClosed`.
 | 🔒💻 | ○ Inactive — normal sleep behavior |
 | ☕ | ◐ Awake — but sleeps if you close the lid |
 | 🔓💻 | ● Awake — even with the lid closed |
-| 🔓💻 | ● Awake — even with the lid closed — Keep Awake adds nothing |
 | 🔓💻 | ● Sleep disabled outside LidClosed |
-| 🔓💻 | ● Sleep disabled outside LidClosed — Keep Awake adds nothing |
 
-The icon reflects Lid Closed Mode when it is on, since it is the stronger of the two. When both are on the status line says so plainly, rather than implying you gained anything by it.
+Turning on Lid Closed Mode greys out Keep Awake, relabelling it **Keep Awake — covered by Lid Closed Mode**, and switches it off if it was running. There is nothing left for it to do in that state, and leaving a checked box that cannot be unchecked would be worse.
 
 ## Requirements
 
