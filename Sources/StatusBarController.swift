@@ -30,6 +30,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     
     // Refresh cached state from pmset
     private func refreshState() {
+        powerManager.syncStateWithSystem()
         currentSystemState = powerManager.isSleepDisabledSystemWide
         updateIcon()
     }

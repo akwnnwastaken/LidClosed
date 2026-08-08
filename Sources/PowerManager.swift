@@ -61,6 +61,15 @@ final class PowerManager {
         return FileManager.default.fileExists(atPath: stateFilePath.path)
     }
 
+    /// Syncs our internal ownership state with the actual system state.
+    /// If we think we own it, but the system says it's off, clear our state file.
+    func syncStateWithSystem() {
+        if isOwnedByUs && !isSleepDisabledSystemWide {
+            NSLog("[LidClosed] External override detected: System sleep is enabled, clearing our stale state file.")
+            removeStateFile()
+        }
+    }
+
     /// Activates lid-closed mode: prevents system sleep.
     /// Returns true if activation was successful.
     @discardableResult
