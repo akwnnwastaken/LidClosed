@@ -222,10 +222,15 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
     /// Describes the combined effect of both switches.
     ///
-    /// Neither mechanism covers the other — `pmset disablesleep` leaves the `displaysleep`
-    /// timer running, and `caffeinate` does not survive the lid closing — so the line has to
-    /// name both, or the user cannot tell which protection is actually in force. Pure and
-    /// `static` so all six combinations can be tested.
+    /// `pmset disablesleep 1` suppresses display sleep as well as system sleep — measured
+    /// directly: idle for 207s with `displaysleep 60` and no assertion held, and the display
+    /// stayed on. Note that `pmset -g` does not reveal this; it still prints `displaysleep 60`
+    /// with no "prevented by" annotation, which is exactly what made an earlier version of
+    /// this comment claim the opposite.
+    ///
+    /// So while lid-closed mode is on, Keep Awake genuinely adds nothing, and the line says so
+    /// rather than implying the two protections differ. Pure and `static` so all six
+    /// combinations can be tested.
     static func statusText(isSleepDisabled: Bool, isOwnedByUs: Bool, isKeepingAwake: Bool) -> String {
         guard isSleepDisabled else {
             return isKeepingAwake
@@ -234,11 +239,11 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         }
 
         let lead = isOwnedByUs
-            ? "● Awake with the lid closed"
+            ? "● Awake — even with the lid closed"
             : "● Sleep disabled outside LidClosed"
 
         return isKeepingAwake
-            ? "\(lead) — display stays on"
-            : "\(lead) — display still sleeps"
+            ? "\(lead) — Keep Awake adds nothing"
+            : lead
     }
 }

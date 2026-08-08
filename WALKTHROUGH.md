@@ -46,8 +46,9 @@ privileged command failed.
   `kIOPMAssertPreventUserIdleSystemSleep`, which `pmset disablesleep 1` already covers, and it
   did nothing for lid-close sleep — so it was redundant, and requiring both to agree was the
   direct cause of the worst bug (sleep left disabled with no recovery marker and no way to
-  switch it off from the UI). Note this does not generalise: the `caffeinate` option added in
-  §7 also asserts *display* sleep, which `pmset disablesleep` genuinely does not cover.
+  switch it off from the UI). The `caffeinate` option added in §7 also asserts display sleep,
+  but a timed idle test later showed `pmset disablesleep` suppresses display sleep as well, so
+  that option is a convenience rather than extra coverage — see §8.
 - **Ownership separated from system state.** `isSleepDisabledSystemWide` reads
   `/usr/bin/pmset -g`; `isOwnedByUs` checks for our state file. The app only ever turns off
   an override it created.
@@ -198,3 +199,35 @@ Test count went from 23 to 40.
 
 See [TODO.md](TODO.md) for the current list, including the pending manual verification of the
 Keep Awake option.
+
+---
+
+## 8. Measured: `pmset disablesleep` also suppresses display sleep (2026-08-09)
+
+The Keep Awake option was documented as covering something lid-closed mode did not: keeping
+the display on. That was inferred from `pmset -g` printing
+`displaysleep 60 (display sleep prevented by caffeinate)` while caffeinate ran — which only
+showed caffeinate was holding the display, not that anything else would let it sleep.
+
+A timed idle test settled it. With `SleepDisabled 1`, `displaysleep 60`, Keep Awake off and no
+assertion held, the machine was left untouched and idle time was sampled every five seconds. It
+reached **207 seconds** and the display never turned off; `pmset -g log` recorded no
+`Display is turned off` event for the whole window.
+
+So lid-closed mode covers strictly more than Keep Awake, and the two are **redundant** when
+both are on, not complementary. What Keep Awake still buys is real but different: no admin
+password, no persistent system setting, and automatic release if the app dies.
+
+Two things worth keeping from this:
+
+- `pmset -g` and `pmset -g assertions` do **not** reveal this suppression. They keep reporting
+  a plain `displaysleep 60` and `PreventUserIdleDisplaySleep 0`. Inferring display behaviour
+  from them is how the wrong claim was made in the first place.
+- Observing a display timeout requires the machine to be genuinely idle. An earlier attempt at
+  this test was inconclusive because measuring and reporting the result is itself activity that
+  resets the idle counter; the fix was to sample idle time in the background and read the log
+  afterwards.
+
+Reverted as a result: the README comparison row, the status-line strings that promised
+"display stays on" / "display still sleeps", and the corresponding AGENTS.md entry. The status
+line now says "Keep Awake adds nothing" while lid-closed mode is on.

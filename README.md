@@ -40,17 +40,17 @@ Reach for this one when you do not actually need clamshell operation: it needs *
 |---|---|---|
 | Mechanism | `pmset disablesleep 1` | `caffeinate -dimsu -w <pid>` |
 | Keeps the system awake | ✅ | ✅ |
+| Keeps the display on | ✅ | ✅ |
 | Works with the lid closed | ✅ | ❌ |
-| Keeps the **display** on | ❌ | ✅ |
 | Admin password | required | not needed |
 | Changes a system setting | yes, and it persists across reboots | no |
 | If the app crashes | recovered on next launch | released automatically |
 
 Disabling lid-closed mode, or quitting from the menu, prompts for your password again and restores normal sleep behavior. Keep Awake just stops.
 
-The two are independent and neither one covers the other, so running both is a real combination rather than a redundant one: **system never sleeps *and* the display never blanks.**
+Lid Closed Mode covers strictly more than Keep Awake — measured, not assumed: with `SleepDisabled 1` and nothing else holding the display, the Mac sat idle for 207 seconds against a 60-second `displaysleep` timer and the screen never turned off. So switching both on is harmless but redundant, and the status line will tell you so.
 
-Lid Closed Mode disables system sleep, but the `displaysleep` timer keeps running — your screen will still turn off on schedule. Only Keep Awake holds the display on. Turn on both if you are watching something on an external monitor and also want the lid to be closeable.
+Keep Awake is the better choice whenever you do not need the lid closed, because it buys the same wakefulness without an admin password, without touching a persistent system setting, and without anything to clean up if the app dies.
 
 ### Safety Features
 
@@ -106,12 +106,12 @@ The binary will be at `.build/release/LidClosed`.
 |------|-------------|
 | 🔒💻 | ○ Inactive — normal sleep behavior |
 | ☕ | ◐ Awake — but sleeps if you close the lid |
-| 🔓💻 | ● Awake with the lid closed — display still sleeps |
-| 🔓💻 | ● Awake with the lid closed — display stays on |
-| 🔓💻 | ● Sleep disabled outside LidClosed — display still sleeps |
-| 🔓💻 | ● Sleep disabled outside LidClosed — display stays on |
+| 🔓💻 | ● Awake — even with the lid closed |
+| 🔓💻 | ● Awake — even with the lid closed — Keep Awake adds nothing |
+| 🔓💻 | ● Sleep disabled outside LidClosed |
+| 🔓💻 | ● Sleep disabled outside LidClosed — Keep Awake adds nothing |
 
-The status line always names both protections, because neither one implies the other. The icon reflects Lid Closed Mode when it is on, since that is the stronger of the two.
+The icon reflects Lid Closed Mode when it is on, since it is the stronger of the two. When both are on the status line says so plainly, rather than implying you gained anything by it.
 
 ## Requirements
 

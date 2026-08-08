@@ -567,32 +567,33 @@ final class StatusTextTests: XCTestCase {
         )
     }
 
-    /// Lid-closed mode alone must not imply the display stays on — it does not.
     func testLidClosedModeOnly() {
         XCTAssertEqual(
             text(sleepDisabled: true, owned: true, keepingAwake: false),
-            "● Awake with the lid closed — display still sleeps"
+            "● Awake — even with the lid closed"
         )
     }
 
-    func testBothActive() {
+    /// Measured: pmset disablesleep also suppresses display sleep, so Keep Awake contributes
+    /// nothing on top of lid-closed mode and the line must not pretend otherwise.
+    func testBothActiveSaysKeepAwakeIsRedundant() {
         XCTAssertEqual(
             text(sleepDisabled: true, owned: true, keepingAwake: true),
-            "● Awake with the lid closed — display stays on"
+            "● Awake — even with the lid closed — Keep Awake adds nothing"
         )
     }
 
     func testExternalOverrideAlone() {
         XCTAssertEqual(
             text(sleepDisabled: true, owned: false, keepingAwake: false),
-            "● Sleep disabled outside LidClosed — display still sleeps"
+            "● Sleep disabled outside LidClosed"
         )
     }
 
     func testExternalOverridePlusKeepAwake() {
         XCTAssertEqual(
             text(sleepDisabled: true, owned: false, keepingAwake: true),
-            "● Sleep disabled outside LidClosed — display stays on"
+            "● Sleep disabled outside LidClosed — Keep Awake adds nothing"
         )
     }
 

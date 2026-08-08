@@ -107,6 +107,10 @@ A fresh reviewer tends to flag these as bugs. They are choices, with reasons:
   and recovery because it mutates a persistent system setting; `AwakeKeeper` has neither
   because `caffeinate -w` cleans itself up. Generalising one over the other would add
   machinery to a path that does not need it.
+- **Lid-closed mode covers strictly more than Keep Awake.** Measured with a timed idle test:
+  `pmset disablesleep 1` suppresses display sleep as well, invisibly — `pmset -g` still prints
+  a plain `displaysleep 60`. Keep Awake's value is no password, no persistent setting and
+  self-release, not extra coverage. Do not re-add claims that the two protect different things.
 - **`caffeinate` keeps `-dimsu` including `-u`.** Its five-second expiry is understood: it
   acts as a one-shot display wake, and `-d` does the sustained work.
 - **`install.sh` does nothing when run non-interactively.** That is a safety property, not an

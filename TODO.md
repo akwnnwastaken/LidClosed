@@ -7,39 +7,15 @@ the design invariants are in [AGENTS.md](AGENTS.md).
 
 ---
 
-## 1. Pending verification
+## 1. Deliberately deferred — low value, known
 
-### 1.1 Manual-test the Keep Awake option
-
-**Status:** open
-
-The `caffeinate` option is covered by unit tests (arguments, idempotence, teardown, launch
-failure) but has not been exercised through the real menu yet. What to check:
-
-1. Menu → **Keep Awake (Lid Open)** → the item should show a checkmark, the status line
-   should read `◐ Awake — but will sleep if the lid closes`, and the menu bar icon should
-   become the cup symbol.
-2. `pmset -g assertions | grep -i caffeinate` should list a `caffeinate` process holding
-   `PreventUserIdleSystemSleep`.
-3. Uncheck it → the assertion disappears, `pgrep -x caffeinate` finds nothing.
-4. Check it again, then `pkill -9 -x LidClosed`. The `caffeinate` child should exit on its
-   own within a second or two, because it was launched with `-w <our pid>`. Verify with
-   `pgrep -lf caffeinate` — nothing should remain.
-
-Step 4 is the important one: it is the property that keeps this path free of the
-recovery machinery, and it only works because of `-w`.
-
----
-
-## 2. Deliberately deferred — low value, known
-
-### 2.1 Debug builds carry `com.apple.security.get-task-allow`
+### 1.1 Debug builds carry `com.apple.security.get-task-allow`
 
 SwiftPM adds this entitlement to debug builds by default; release builds have none
 (verified with `codesign -d --entitlements`). It permits attaching a debugger to a process
 that performs privileged operations. Only matters if a debug binary is ever distributed.
 
-### 2.2 Version numbers are hard-coded
+### 1.2 Version numbers are hard-coded
 
 `CFBundleShortVersionString` (1.0.0) and `CFBundleVersion` (1) live in
 `Resources/Info.plist` and are never bumped by `scripts/install.sh`. Not worth automating
@@ -47,12 +23,12 @@ until there is an actual release process to hang it off.
 
 ---
 
-## 3. Architectural decisions — out of scope by choice
+## 2. Architectural decisions — out of scope by choice
 
 These are not bugs. They are known limits of the current design, recorded so the reasoning
 is not lost.
 
-### 3.1 No cleanup at logout or shutdown
+### 2.1 No cleanup at logout or shutdown
 
 Restoring sleep requires an admin password, and at logout there is nobody to type one, so
 `attemptSilentRestore()` fails by design. Consequence: logging out or restarting while
@@ -67,7 +43,7 @@ LaunchDaemon. Mitigated instead by the first-run warning and the README.
 Note that the Keep Awake option has no such problem — `caffeinate -w` releases its
 assertions when the app dies, whatever the cause.
 
-### 3.2 No privileged helper
+### 2.2 No privileged helper
 
 The app authenticates through AppleScript's `with administrator privileges` rather than
 installing a privileged helper via `SMAppService` with a code-requirement check. Root
@@ -78,12 +54,12 @@ executable with a different binary and re-signing ad-hoc (no certificate needed)
 `valid on disk` and `satisfies its Designated Requirement` again, and the replacement runs.
 Signing catches accidental corruption; `chown root:wheel` is what stops an attacker.
 
-### 3.3 No notarization or signed release artifact
+### 2.3 No notarization or signed release artifact
 
 Users who download rather than build will hit a Gatekeeper warning. Requires a paid
 Developer ID.
 
-### 3.4 The `dist/` copy is user-owned
+### 2.4 The `dist/` copy is user-owned
 
 `scripts/install.sh` hardens only what it installs into `/Applications`. The bundle left in
 `dist/` is owned by the building user and is perfectly launchable, so running that copy
@@ -93,6 +69,11 @@ installing by hand with `cp -R` instead of the script.
 ---
 
 ## Done
+
+Keep Awake was manually verified on 2026-08-09: the `caffeinate` child appears bound to the
+app's pid, disappears when switched off, and — the point of the exercise — exits by itself
+after `pkill -9` on the app. A timed idle test in the same session also disproved the claim
+that lid-closed mode leaves the display sleeping; see WALKTHROUGH.md §8.
 
 Closed on 2026-08-09, kept here briefly because each one carries a correction worth
 remembering.

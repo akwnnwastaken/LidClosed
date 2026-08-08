@@ -149,12 +149,14 @@ Each of these was a real bug once. See [WALKTHROUGH.md](WALKTHROUGH.md) for the 
   drop `-w`.
 - **`caffeinate -u` without `-t` expires after five seconds.** In `-dimsu` it therefore acts
   as a one-shot "turn the display on"; `-d` does the sustained work. Intended, not a bug.
-- **`pmset disablesleep 1` does not prevent *display* sleep.** It blocks system sleep; the
-  `displaysleep` timer keeps running independently. Verified: with `SleepDisabled 1` active,
-  `pmset -g` still reported `displaysleep 60 (display sleep prevented by caffeinate)` — only
-  caffeinate was holding the display on. So the two mechanisms are complementary, not
-  overlapping, and enabling both is a legitimate combination rather than a redundant one.
-  Do not make them mutually exclusive.
+- **`pmset disablesleep 1` suppresses display sleep too, and `pmset -g` does not show it.**
+  Measured: `SleepDisabled 1`, `displaysleep 60`, no assertion held, machine idle for 207
+  seconds — the display never turned off. Throughout, `pmset -g` kept printing a plain
+  `displaysleep 60` with no "prevented by" annotation and `pmset -g assertions` reported
+  `PreventUserIdleDisplaySleep 0`. Reading those outputs and concluding the display would
+  still sleep is a mistake this repo has already made once; only a timed idle test settles it.
+  Consequence: lid-closed mode covers strictly more than Keep Awake, so the two are redundant
+  when both on — not complementary.
 - **Ad-hoc code signing is not a security boundary.** Anyone can replace the binary and
   re-sign ad-hoc without a certificate; verification then passes again. `chown root:wheel`
   on the installed bundle is the actual mitigation. Do not describe signing as preventing
