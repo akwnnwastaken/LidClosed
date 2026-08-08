@@ -45,11 +45,14 @@ way to reproduce this, and is a normal thing to do while developing.
 
 ## 2. Planned
 
-### 2.1 Add a `caffeinate -dimsu` mode
+### 2.1 Add a `caffeinate -dimsu` option
 
 **Status:** planned
 
-Add a second, lighter mode backed by `caffeinate` instead of `pmset disablesleep`.
+Add a **user-selectable option** backed by `caffeinate`, for keeping the Mac awake in the
+ordinary case where the lid stays open. It sits alongside lid-closed mode as a separate
+choice the user makes — it is not a default and not a replacement for
+`pmset disablesleep`.
 
 Flags (from `man caffeinate`):
 
@@ -71,15 +74,31 @@ Two things to get right:
   [WALKTHROUGH.md](WALKTHROUGH.md) §2). So this is a *complement* to lid-closed mode, not a
   replacement for it — it covers "keep the Mac awake with the lid open".
 
-Why it is worth adding anyway: the assertions are held by a child process and are released
-the moment that process exits. That means **no admin password, no root, no persistent
-system setting, and no crash-recovery problem at all** — the entire class of bugs this
-project spent a review cycle fixing simply does not exist on this path. A good default for
-users who do not actually need clamshell operation.
+Why it is worth having as its own option: the assertions are held by a child process and are
+released the moment that process exits. That means **no admin password, no root, no
+persistent system setting, and no crash-recovery problem at all** — the entire class of bugs
+this project spent a review cycle fixing simply does not exist on this path. For a user who
+just wants the screen and machine to stay awake with the lid open, it is strictly the
+cheaper and safer choice.
 
-Implementation sketch: spawn `caffeinate` as a child `Process`, retain the handle, and
-`terminate()` it on deactivate/quit. `caffeinate -w <our pid>` is an alternative that ties
-the assertion's lifetime to the app's pid instead.
+**Implementation sketch:** spawn `caffeinate` as a child `Process`, retain the handle, and
+`terminate()` it when the option is switched off or the app quits. `caffeinate -w <our pid>`
+is an alternative that ties the assertion's lifetime to the app's pid instead.
+
+**Design questions to settle first:**
+
+- *Two independent toggles or one mode picker?* Two independent menu items is the simpler
+  model, and matches the fact that the two mechanisms are unrelated. The status line then
+  has to report both.
+- *What if both are on at once?* Harmless but redundant — `pmset disablesleep 1` already
+  covers everything `caffeinate` does, plus clamshell. Either allow it, or grey out the
+  caffeinate option while lid-closed mode is active.
+- *No state file is needed for this path.* The child process dies with the app, so there is
+  nothing to recover. `isOwnedByUs` and `state.json` stay specific to the `pmset` path —
+  keep the two lifecycles separate rather than generalising the existing ownership logic
+  over both.
+- *`applicationWillTerminate` / signal handlers* need to terminate the child too, though
+  the kernel reaping the child on exit already covers the crash case.
 
 ---
 
