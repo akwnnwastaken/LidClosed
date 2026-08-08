@@ -2,9 +2,15 @@
 
 Working notes for AI agents (and humans) contributing to LidClosed.
 
-LidClosed is a macOS menu bar utility (`LSUIElement`) that disables system sleep — including
-lid-close sleep — by running `pmset disablesleep 1` through an administrator authentication
-prompt. SwiftPM package, Swift tools 5.9, deployment target macOS 13.
+LidClosed is a macOS menu bar utility (`LSUIElement`) offering two independent ways to stop
+the Mac sleeping: **Lid Closed Mode**, which runs `pmset disablesleep 1` through an
+administrator authentication prompt and covers clamshell operation, and **Keep Awake**, which
+holds IOKit assertions through a `caffeinate` child and only works with the lid open. SwiftPM
+package, Swift tools 5.9, deployment target macOS 13.
+
+Nearly all of the complexity in this repo belongs to the first mechanism, because it mutates
+a persistent system setting and therefore needs ownership tracking and crash recovery. The
+second has none of that by design.
 
 ---
 
@@ -40,7 +46,7 @@ marker is the only thing that lets the next launch recover.
 
 ```bash
 swift build -c debug          # or -c release
-swift test                    # 23 tests, no privileged calls, no real state file touched
+swift test                    # 40 tests, no privileged calls, no real state file touched
 ./scripts/install.sh          # build + bundle + ad-hoc sign + install to /Applications
 ```
 
@@ -57,13 +63,16 @@ when stdin is not a TTY**, so piping it does nothing. Run it from a real termina
 | `Sources/AppDelegate.swift` | Lifecycle; calls `PowerManager.shared.start()` |
 | `Sources/StatusBarController.swift` | Menu bar UI, `NSMenuDelegate`, cached system state |
 | `Sources/PowerManager.swift` | The state machine — activation, recovery, signal handling |
+| `Sources/AwakeKeeper.swift` | The `caffeinate` option — independent of `PowerManager` |
+| `Sources/InstanceLock.swift` | `flock` guaranteeing a single running instance |
 | `Sources/CommandRunner.swift` | Seam: plain process execution |
 | `Sources/PrivilegedCommandRunner.swift` | Seam: the `with administrator privileges` path |
+| `Sources/BackgroundProcessLauncher.swift` | Seam: long-lived child processes |
 | `Sources/UserNotifier.swift` | Seam: modal alerts |
 
-The three seams exist so the state machine is testable without triggering a real
-authentication dialog or opening a modal window. Anything new that touches the system or
-shows UI should go through a seam too, or it becomes untestable.
+The seams exist so the state machine is testable without triggering a real authentication
+dialog, spawning a real child process, or opening a modal window. Anything new that touches
+the system or shows UI should go through a seam too, or it becomes untestable.
 
 ---
 
@@ -88,14 +97,23 @@ Each of these was a real bug once. See [WALKTHROUGH.md](WALKTHROUGH.md) for the 
    and a dialog at logout just gets the process killed.
 6. **Owning-pid liveness is diagnostic only.** `recoverStaleState()` logs whether the pid is
    alive but never uses it to skip recovery, because pids are recycled and wrongly skipping
-   recovery leaves the Mac unable to sleep. (The second-instance problem this creates is
-   tracked in [TODO.md](TODO.md) §1.1 and must be fixed by preventing a second instance, not
-   by trusting liveness.)
+   recovery leaves the Mac unable to sleep. The second-instance problem this would otherwise
+   create is solved by invariant 10 instead — by preventing a second instance, not by
+   trusting liveness.
 7. **Tests must never touch the real state file.** `stateFileURL` is injectable; every test
    uses a temp directory and never calls `start()`. An earlier suite deleted the production
    `state.json` in `setUp` and could strand a live override.
-8. **Only hard-coded literals go into `runPrivilegedCommand`.** It interpolates into
-   AppleScript source. A path or user input there is arbitrary command execution as root.
+8. **The privileged API takes an executable plus an argument array, never a command
+   string.** `AppleScriptPrivilegedRunner` quotes each argument for the shell and then for
+   the AppleScript literal. Do not add a convenience overload that accepts a whole command
+   line — that would put the burden back on callers to remember, which is how it used to be.
+9. **The two keep-awake mechanisms have separate lifecycles.** `PowerManager` owns the
+   `pmset` override, with a state file and recovery. `AwakeKeeper` owns the `caffeinate`
+   child, with neither, because there is nothing to recover. Do not generalise the ownership
+   logic over both.
+10. **Only one instance may run.** `InstanceLock` is acquired before `PowerManager.start()`.
+    Without it, a second instance reads the first one's live state file, concludes the
+    override is stale, and tries to undo it.
 
 ---
 
@@ -108,9 +126,16 @@ Each of these was a real bug once. See [WALKTHROUGH.md](WALKTHROUGH.md) for the 
   (`process ==`, `processImagePath CONTAINS`, `eventMessage CONTAINS`, with `--info
   --debug`) all return nothing. To see logs, run the binary directly in a terminal:
   `/Applications/LidClosed.app/Contents/MacOS/LidClosed`.
-- **Do not run a second instance while one is active.** The second treats the first's live
-  override as stale and tries to undo it, with an unexplained password prompt. Known gap,
-  TODO §1.1.
+- **A second instance is now refused by `InstanceLock`**, and logs
+  `Another instance is already running`. If you are wondering why a freshly built binary
+  exits immediately, check whether the installed app is running.
+- **An orphaned `caffeinate` child is not reaped.** Verified: when its parent dies, a plain
+  `caffeinate` keeps running and holds its assertions indefinitely. This is why
+  `AwakeKeeper` launches it as `caffeinate -dimsu -w <our pid>` — `-w` makes it release and
+  exit when our pid goes away, which was verified to survive a SIGKILL of the parent. Never
+  drop `-w`.
+- **`caffeinate -u` without `-t` expires after five seconds.** In `-dimsu` it therefore acts
+  as a one-shot "turn the display on"; `-d` does the sustained work. Intended, not a bug.
 - **Ad-hoc code signing is not a security boundary.** Anyone can replace the binary and
   re-sign ad-hoc without a certificate; verification then passes again. `chown root:wheel`
   on the installed bundle is the actual mitigation. Do not describe signing as preventing

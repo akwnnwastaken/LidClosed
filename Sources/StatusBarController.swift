@@ -6,9 +6,11 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
     private var statusItem: NSStatusItem?
     private var toggleMenuItem: NSMenuItem?
+    private var keepAwakeMenuItem: NSMenuItem?
     private var statusMenuItem: NSMenuItem?
 
     private let powerManager = PowerManager.shared
+    private let awakeKeeper = AwakeKeeper.shared
 
     /// Cached system state, refreshed when the menu opens, so reading it does not spawn
     /// a `pmset` process on every UI query.
@@ -18,7 +20,8 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
     // MARK: - SF Symbols for menu bar icon
 
-    private let iconActive = "lock.open.laptopcomputer"
+    private let iconLidClosedMode = "lock.open.laptopcomputer"
+    private let iconKeepAwake = "cup.and.saucer"
     private let iconInactive = "lock.laptopcomputer"
 
     // MARK: - Setup
@@ -58,13 +61,24 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
         menu.addItem(NSMenuItem.separator())
 
+        // `autoenablesItems` is off, so isEnabled has to be set explicitly. The lid-closed
+        // item is always enabled: in the externally-managed state it opens an explanation
+        // rather than changing anything.
         toggleMenuItem = NSMenuItem(title: "", action: #selector(toggleAction), keyEquivalent: "t")
         toggleMenuItem?.target = self
-        // `autoenablesItems` is off, so this has to be set explicitly. The item is always
-        // enabled: in the externally-managed state it opens an explanation rather than
-        // changing anything.
         toggleMenuItem?.isEnabled = true
         menu.addItem(toggleMenuItem!)
+
+        // A checkmark item: this one is an independent option rather than a state change to
+        // the system, so it reads as a setting instead of an action.
+        keepAwakeMenuItem = NSMenuItem(
+            title: "Keep Awake (Lid Open)",
+            action: #selector(keepAwakeAction),
+            keyEquivalent: "k"
+        )
+        keepAwakeMenuItem?.target = self
+        keepAwakeMenuItem?.isEnabled = true
+        menu.addItem(keepAwakeMenuItem!)
 
         menu.addItem(NSMenuItem.separator())
 
@@ -90,8 +104,8 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             powerManager.deactivate()
         } else if isSleepDisabled {
             // Managed outside LidClosed. `activate()` changes nothing here — it explains
-            // the situation and how to hand control back. The item stays clickable so
-            // that explanation is reachable instead of being a dead end.
+            // the situation and how to hand control back. The item stays clickable so that
+            // explanation is reachable instead of being a dead end.
             powerManager.activate()
         } else {
             if !UserDefaults.standard.bool(forKey: firstRunWarningKey) {
@@ -105,7 +119,27 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         updateUI()
     }
 
+    /// Toggles the `caffeinate`-backed option. Independent of lid-closed mode: no password,
+    /// no persistent system setting, nothing to recover.
+    @objc private func keepAwakeAction() {
+        if awakeKeeper.isActive {
+            awakeKeeper.stop()
+        } else if !awakeKeeper.start() {
+            let alert = NSAlert()
+            alert.messageText = "Could Not Keep the Mac Awake"
+            alert.informativeText = "LidClosed could not start /usr/bin/caffeinate."
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "OK")
+            NSApp.activate(ignoringOtherApps: true)
+            alert.runModal()
+        }
+
+        updateUI()
+    }
+
     @objc private func quitAction() {
+        awakeKeeper.stop()
+
         // The user is present, so offer an authenticated restore rather than quitting
         // silently and leaving the Mac unable to sleep. `deactivate` no-ops if we do not
         // own the override, and reports the problem itself if the restore fails.
@@ -124,6 +158,9 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         Terminal:
 
         sudo pmset disablesleep 0
+
+        If you only need the Mac awake with the lid open, use "Keep Awake" instead — it \
+        needs no password and changes no system settings.
         """
         alert.alertStyle = .informational
         alert.addButton(withTitle: "I Understand")
@@ -138,12 +175,20 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         updateIcon()
         statusMenuItem?.title = statusText()
         toggleMenuItem?.title = toggleText()
+        keepAwakeMenuItem?.state = awakeKeeper.isActive ? .on : .off
     }
 
     private func updateIcon() {
         guard let button = statusItem?.button else { return }
 
-        let symbolName = isSleepDisabled ? iconActive : iconInactive
+        let symbolName: String
+        if isSleepDisabled {
+            symbolName = iconLidClosedMode
+        } else if awakeKeeper.isActive {
+            symbolName = iconKeepAwake
+        } else {
+            symbolName = iconInactive
+        }
 
         if let image = NSImage(systemSymbolName: symbolName, accessibilityDescription: "LidClosed") {
             image.isTemplate = true // Adapts to light/dark menu bar
@@ -151,7 +196,8 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             button.image = image.withSymbolConfiguration(config)
         } else {
             // Fallback text if SF Symbols unavailable
-            button.title = isSleepDisabled ? "☕" : "💤"
+            button.image = nil
+            button.title = (isSleepDisabled || awakeKeeper.isActive) ? "☕" : "💤"
         }
     }
 
@@ -167,11 +213,14 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     }
 
     private func statusText() -> String {
-        guard isSleepDisabled else {
-            return "○ Inactive — Normal sleep behavior"
+        if isSleepDisabled {
+            return powerManager.isOwnedByUs
+                ? "● Active — Managed by LidClosed"
+                : "● Active — Managed by system or another app"
         }
-        return powerManager.isOwnedByUs
-            ? "● Active — Managed by LidClosed"
-            : "● Active — Managed by system or another app"
+        if awakeKeeper.isActive {
+            return "◐ Awake — but will sleep if the lid closes"
+        }
+        return "○ Inactive — Normal sleep behavior"
     }
 }

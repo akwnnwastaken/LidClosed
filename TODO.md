@@ -1,149 +1,73 @@
 # TODO
 
-Open items left after the code-review remediation of 2026-08-08.
+Open items. Last reviewed 2026-08-09.
 
-What was already fixed is documented in [WALKTHROUGH.md](WALKTHROUGH.md). The manual test
-matrix (7 scenarios covering the real authentication dialog, crash recovery and external
-overrides) was completed on 2026-08-08 — all 7 passed, so nothing is pending there.
-
----
-
-## 1. Real gaps — worth fixing
-
-### 1.1 Single-instance enforcement
-
-**Status:** open · **Severity:** medium · **Found:** 2026-08-08, during manual testing
-
-If two LidClosed instances run at once, the second one treats the first one's *live*
-override as stale, presents an admin authentication dialog and — if authorized — undoes it.
-Observed in the logs:
-
-```
-[LidClosed] Found state file from pid 83260 (still running), 63s old
-[LidClosed] Stale override detected — re-enabling system sleep
-```
-
-The first instance then still believes it owns the override until its next
-`syncStateWithSystem()` call, at which point the UI self-heals to Inactive. Not
-catastrophic, but it produces an unexplained password prompt and silently re-enables sleep.
-
-**Why it is not fixed by a liveness check:** `recoverStaleState()` in
-`Sources/PowerManager.swift` deliberately logs whether the owning pid is still alive but
-never uses it to skip recovery, because pids are recycled and wrongly skipping recovery
-would leave the Mac unable to sleep. That trade-off is correct and should stay.
-
-**Fix instead by preventing the second instance:**
-- add `LSMultipleInstancesProhibited` to `Resources/Info.plist`, and/or
-- at launch, check `NSRunningApplication.runningApplications(withBundleIdentifier:)` and
-  exit early if another instance is already running.
-
-Note that running the raw binary (`.build/release/LidClosed` or
-`dist/LidClosed.app/Contents/MacOS/LidClosed`) alongside the installed app is the easiest
-way to reproduce this, and is a normal thing to do while developing.
+What has been fixed and why is in [WALKTHROUGH.md](WALKTHROUGH.md). Working conventions and
+the design invariants are in [AGENTS.md](AGENTS.md).
 
 ---
 
-## 2. Planned
+## 1. Pending verification
 
-### 2.1 Add a `caffeinate -dimsu` option
+### 1.1 Manual-test the Keep Awake option
 
-**Status:** planned
+**Status:** open
 
-Add a **user-selectable option** backed by `caffeinate`, for keeping the Mac awake in the
-ordinary case where the lid stays open. It sits alongside lid-closed mode as a separate
-choice the user makes — it is not a default and not a replacement for
-`pmset disablesleep`.
+The `caffeinate` option is covered by unit tests (arguments, idempotence, teardown, launch
+failure) but has not been exercised through the real menu yet. What to check:
 
-Flags (from `man caffeinate`):
+1. Menu → **Keep Awake (Lid Open)** → the item should show a checkmark, the status line
+   should read `◐ Awake — but will sleep if the lid closes`, and the menu bar icon should
+   become the cup symbol.
+2. `pmset -g assertions | grep -i caffeinate` should list a `caffeinate` process holding
+   `PreventUserIdleSystemSleep`.
+3. Uncheck it → the assertion disappears, `pgrep -x caffeinate` finds nothing.
+4. Check it again, then `pkill -9 -x LidClosed`. The `caffeinate` child should exit on its
+   own within a second or two, because it was launched with `-w <our pid>`. Verify with
+   `pgrep -lf caffeinate` — nothing should remain.
 
-| Flag | Effect |
-|------|--------|
-| `-d` | prevent display sleep |
-| `-i` | prevent system idle sleep |
-| `-m` | prevent disk idle sleep |
-| `-s` | prevent system sleep — **only valid on AC power** |
-| `-u` | declare user active; turns the display on if off |
-
-Two things to get right:
-
-- **`-u` without `-t` defaults to a 5 second timeout**, so in `-dimsu` the `-u` assertion
-  drops almost immediately. Either pair it with `-t`, or leave `-u` out — the other four
-  flags are what actually hold the machine awake.
-- **`caffeinate` creates IOKit power assertions, which do not prevent lid-close sleep.**
-  This is the same reason IOKit assertions were removed from `PowerManager` (see
-  [WALKTHROUGH.md](WALKTHROUGH.md) §2). So this is a *complement* to lid-closed mode, not a
-  replacement for it — it covers "keep the Mac awake with the lid open".
-
-Why it is worth having as its own option: the assertions are held by a child process and are
-released the moment that process exits. That means **no admin password, no root, no
-persistent system setting, and no crash-recovery problem at all** — the entire class of bugs
-this project spent a review cycle fixing simply does not exist on this path. For a user who
-just wants the screen and machine to stay awake with the lid open, it is strictly the
-cheaper and safer choice.
-
-**Implementation sketch:** spawn `caffeinate` as a child `Process`, retain the handle, and
-`terminate()` it when the option is switched off or the app quits. `caffeinate -w <our pid>`
-is an alternative that ties the assertion's lifetime to the app's pid instead.
-
-**Design questions to settle first:**
-
-- *Two independent toggles or one mode picker?* Two independent menu items is the simpler
-  model, and matches the fact that the two mechanisms are unrelated. The status line then
-  has to report both.
-- *What if both are on at once?* Harmless but redundant — `pmset disablesleep 1` already
-  covers everything `caffeinate` does, plus clamshell. Either allow it, or grey out the
-  caffeinate option while lid-closed mode is active.
-- *No state file is needed for this path.* The child process dies with the app, so there is
-  nothing to recover. `isOwnedByUs` and `state.json` stay specific to the `pmset` path —
-  keep the two lifecycles separate rather than generalising the existing ownership logic
-  over both.
-- *`applicationWillTerminate` / signal handlers* need to terminate the child too, though
-  the kernel reaping the child on exit already covers the crash case.
+Step 4 is the important one: it is the property that keeps this path free of the
+recovery machinery, and it only works because of `-w`.
 
 ---
 
-## 3. Deliberately deferred — low value, known
+## 2. Deliberately deferred — low value, known
 
-### 3.1 Debug builds carry `com.apple.security.get-task-allow`
+### 2.1 Debug builds carry `com.apple.security.get-task-allow`
 
 SwiftPM adds this entitlement to debug builds by default; release builds have none
 (verified with `codesign -d --entitlements`). It permits attaching a debugger to a process
 that performs privileged operations. Only matters if a debug binary is ever distributed.
 
-### 3.2 Version numbers are hard-coded
+### 2.2 Version numbers are hard-coded
 
 `CFBundleShortVersionString` (1.0.0) and `CFBundleVersion` (1) live in
-`Resources/Info.plist` and are never bumped by `scripts/install.sh`, so version drift is
-guaranteed. Worth solving if releases ever become a thing.
-
-### 3.3 No quoting helper for the privileged command
-
-`AppleScriptPrivilegedRunner.run(command:)` in `Sources/PrivilegedCommandRunner.swift`
-interpolates its argument into AppleScript source. Only hard-coded literals are ever
-passed, and the call site documents that requirement, but nothing *enforces* it. A single
-future caller passing a file path or user input would get arbitrary command execution as
-root. A quoting/escaping helper — or an argument-array API instead of a command string —
-would make the guarantee structural rather than conventional.
+`Resources/Info.plist` and are never bumped by `scripts/install.sh`. Not worth automating
+until there is an actual release process to hang it off.
 
 ---
 
-## 4. Architectural decisions — out of scope by choice
+## 3. Architectural decisions — out of scope by choice
 
 These are not bugs. They are known limits of the current design, recorded so the reasoning
 is not lost.
 
-### 4.1 No cleanup at logout or shutdown
+### 3.1 No cleanup at logout or shutdown
 
 Restoring sleep requires an admin password, and at logout there is nobody to type one, so
 `attemptSilentRestore()` fails by design. Consequence: logging out or restarting while
-LidClosed is Active leaves `SleepDisabled 1` in place until LidClosed is launched again.
+lid-closed mode is Active leaves `SleepDisabled 1` in place until LidClosed is launched
+again.
 
 This matters because `SleepDisabled` is persisted to
 `/Library/Preferences/com.apple.PowerManagement.plist` under `SystemPowerSettings`, so it
 **survives reboots** (verified). Making logout cleanup actually work would require a
 LaunchDaemon. Mitigated instead by the first-run warning and the README.
 
-### 4.2 No privileged helper
+Note that the Keep Awake option has no such problem — `caffeinate -w` releases its
+assertions when the app dies, whatever the cause.
+
+### 3.2 No privileged helper
 
 The app authenticates through AppleScript's `with administrator privileges` rather than
 installing a privileged helper via `SMAppService` with a code-requirement check. Root
@@ -154,14 +78,36 @@ executable with a different binary and re-signing ad-hoc (no certificate needed)
 `valid on disk` and `satisfies its Designated Requirement` again, and the replacement runs.
 Signing catches accidental corruption; `chown root:wheel` is what stops an attacker.
 
-### 4.3 No notarization or signed release artifact
+### 3.3 No notarization or signed release artifact
 
 Users who download rather than build will hit a Gatekeeper warning. Requires a paid
 Developer ID.
 
-### 4.4 The `dist/` copy is user-owned
+### 3.4 The `dist/` copy is user-owned
 
 `scripts/install.sh` hardens only what it installs into `/Applications`. The bundle left in
 `dist/` is owned by the building user and is perfectly launchable, so running that copy
 reopens the privilege-escalation path. The script prints a warning about this, and about
 installing by hand with `cp -R` instead of the script.
+
+---
+
+## Done
+
+Closed on 2026-08-09, kept here briefly because each one carries a correction worth
+remembering.
+
+- **Single-instance enforcement.** `Sources/InstanceLock.swift`, an advisory `flock` taken
+  before `PowerManager.start()`. A `flock` rather than a bundle-identifier check, because the
+  case that actually caused trouble was the raw executable being run outside a bundle while
+  developing. The kernel drops the lock on process death, so SIGKILL leaves nothing stale.
+- **`caffeinate` option.** `Sources/AwakeKeeper.swift`, exposed as a checkmark menu item.
+  The earlier note in this file claimed the kernel reaps the `caffeinate` child when the
+  parent exits — **that was wrong.** Verified: an orphaned `caffeinate` keeps running and
+  holds its assertions indefinitely. `-w <our pid>` is what makes it release them, and it
+  was verified to work even when the parent is SIGKILLed.
+- **Structural quoting for privileged commands.** `PrivilegedCommandRunner` now takes an
+  executable path plus an argument array instead of a command string, and quotes each
+  argument for the shell and then for the AppleScript literal. The guarantee no longer
+  depends on callers remembering to pass only literals. Covered by injection tests,
+  including a round-trip through a real shell.

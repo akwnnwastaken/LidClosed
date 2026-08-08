@@ -11,7 +11,7 @@ enum PrivilegedOutcome: Equatable {
 /// Runs a command as root. Abstracted so the activate/deactivate state machine can be
 /// unit tested without triggering a real authentication dialog.
 protocol PrivilegedCommandRunner: Sendable {
-    @MainActor func run(command: String) -> PrivilegedOutcome
+    @MainActor func run(executablePath: String, arguments: [String]) -> PrivilegedOutcome
 }
 
 /// Default implementation using AppleScript's built-in authentication dialog.
@@ -21,13 +21,8 @@ struct AppleScriptPrivilegedRunner: PrivilegedCommandRunner {
     private static let userCancelledErrorNumber = -128
 
     @MainActor
-    func run(command: String) -> PrivilegedOutcome {
-        // Important: `command` is interpolated into AppleScript source. Only pass
-        // hard-coded literals — never user input, a file path, or anything else that
-        // could contain a quote or a backslash.
-        let source = "do shell script \"\(command)\" with administrator privileges"
-
-        guard let script = NSAppleScript(source: source) else {
+    func run(executablePath: String, arguments: [String]) -> PrivilegedOutcome {
+        guard let script = NSAppleScript(source: Self.scriptSource(executablePath, arguments)) else {
             return .failed("Could not compile the authorization script.")
         }
 
@@ -44,5 +39,37 @@ struct AppleScriptPrivilegedRunner: PrivilegedCommandRunner {
         let message = error[NSAppleScript.errorMessage] as? String ?? "AppleScript error \(code)"
         NSLog("[LidClosed] AppleScript error \(code): \(message)")
         return .failed(message)
+    }
+
+    // MARK: - Script construction
+
+    /// Builds the AppleScript source for running `executablePath` with `arguments` as root.
+    ///
+    /// The command crosses two levels of quoting — a shell command line, wrapped in an
+    /// AppleScript string literal — so both are escaped here. Taking an executable and an
+    /// argument array rather than a command string makes that guarantee structural: a
+    /// caller cannot accidentally inject a second command, however the arguments were
+    /// derived.
+    static func scriptSource(_ executablePath: String, _ arguments: [String]) -> String {
+        let shellCommand = ([executablePath] + arguments)
+            .map(shellQuoted)
+            .joined(separator: " ")
+
+        return "do shell script \"\(appleScriptEscaped(shellCommand))\" with administrator privileges"
+    }
+
+    /// Wraps one argument in shell single quotes. Inside single quotes every character is
+    /// literal, so a single quote is the only thing needing special handling: close the
+    /// quote, emit an escaped quote, reopen.
+    static func shellQuoted(_ argument: String) -> String {
+        "'" + argument.replacingOccurrences(of: "'", with: #"'\''"#) + "'"
+    }
+
+    /// Escapes a string for use inside a double-quoted AppleScript literal.
+    /// Backslashes must be handled before quotes, or the added escapes get re-escaped.
+    static func appleScriptEscaped(_ string: String) -> String {
+        string
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
     }
 }

@@ -153,7 +153,7 @@ final class PowerManager {
             return false
         }
 
-        switch privilegedRunner.run(command: "\(Self.pmsetPath) disablesleep 1") {
+        switch privilegedRunner.run(executablePath: Self.pmsetPath, arguments: ["disablesleep", "1"]) {
         case .success:
             NSLog("[LidClosed] Sleep override enabled")
             if !writeStateFile() {
@@ -198,7 +198,7 @@ final class PowerManager {
     func deactivate(isQuitting: Bool = false) -> Bool {
         guard isOwnedByUs else { return true }
 
-        switch privilegedRunner.run(command: "\(Self.pmsetPath) disablesleep 0") {
+        switch privilegedRunner.run(executablePath: Self.pmsetPath, arguments: ["disablesleep", "0"]) {
         case .success:
             removeStateFile()
             NSLog("[LidClosed] Sleep override removed")
@@ -300,7 +300,7 @@ final class PowerManager {
         }
 
         NSLog("[LidClosed] Stale override detected — re-enabling system sleep")
-        switch privilegedRunner.run(command: "\(Self.pmsetPath) disablesleep 0") {
+        switch privilegedRunner.run(executablePath: Self.pmsetPath, arguments: ["disablesleep", "0"]) {
         case .success:
             removeStateFile()
             NSLog("[LidClosed] Recovery complete")

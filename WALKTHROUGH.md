@@ -50,8 +50,10 @@ privileged command failed.
   `/usr/bin/pmset -g`; `isOwnedByUs` checks for our state file. The app only ever turns off
   an override it created.
 - **External overrides are never claimed.** If sleep is already disabled by a manual
-  `pmset` or another app, `activate()` runs no command, explains the situation, and the
-  menu shows the toggle disabled with "Managed Outside LidClosed".
+  `pmset` or another app, `activate()` runs no command and explains the situation. The menu
+  reads "Managed Outside LidClosed…" and stays clickable, so the explanation is reachable
+  rather than a dead end. (It was briefly greyed out, which made the explanation
+  unreachable — a dead end with no guidance.)
 - **Failures preserve the recovery marker.** A cancelled or failed disable keeps
   `state.json` so the next launch can recover, and tells the user sleep is still disabled.
 - **Failed state-file writes are surfaced.** If sleep is disabled but the marker cannot be
@@ -100,11 +102,11 @@ macOS 13 deployment target.
 
 ## 5. Testability
 
-- **Three injection seams:** `CommandRunner` (process execution), `PrivilegedCommandRunner`
-  (the authenticated path), and `UserNotifier` (modal alerts). The privileged path matters
-  most — every critical bug lived there, and it was previously untestable because it called
-  `NSAppleScript` directly.
-- **22 tests** covering the `pmset` parser and the full transition table: activate success
+- **Four injection seams:** `CommandRunner` (process execution), `PrivilegedCommandRunner`
+  (the authenticated path), `BackgroundProcessLauncher` (long-lived children) and
+  `UserNotifier` (modal alerts). The privileged path matters most — every critical bug lived
+  there, and it was previously untestable because it called `NSAppleScript` directly.
+- **Tests** covering the `pmset` parser and the full transition table: activate success
   / cancel / failure / external-override, deactivate success / cancel / failure /
   unowned, silent restore success / failure / unowned, external-change syncing, and state
   file contents.
@@ -126,12 +128,71 @@ macOS 13 deployment target.
   or another app".
 - `README.md` documents the persistence, the uninstall order, and manual recovery.
 
+---
+
+## 7. Second remediation round (2026-08-09)
+
+Three items from TODO.md were closed. Each one came with a correction to something previously
+believed or written down.
+
+### Single-instance enforcement
+
+`Sources/InstanceLock.swift` takes an advisory `flock` before `PowerManager.start()`. Without
+it, a second instance read the first one's *live* state file, concluded the override was
+stale, presented an unexplained authentication dialog and could silently re-enable sleep.
+
+A `flock` rather than a bundle-identifier check, because the case that actually caused trouble
+was the raw executable being run outside an app bundle while developing — where
+`Bundle.main.bundleIdentifier` is nil. The kernel drops the lock on process death, so SIGKILL
+leaves nothing stale behind. If the lock file cannot be opened at all the app continues
+unlocked: a lost safeguard beats refusing to launch.
+
+Verified end to end — the first instance acquires it, a second logs
+`Another instance is already running` and exits, and no spurious recovery is triggered.
+
+### The `caffeinate` option
+
+`Sources/AwakeKeeper.swift`, exposed as a checkmark menu item, keeps the Mac awake while the
+lid is open. It needs no password and writes no persistent state, so none of the ownership or
+recovery machinery applies — the two lifecycles are deliberately kept separate.
+
+**A correction:** the planning note in TODO.md had claimed the kernel reaps the `caffeinate`
+child when the parent exits, so a crash would need no handling. That was wrong. An orphaned
+`caffeinate` keeps running and holds its assertions indefinitely. The fix is
+`caffeinate -dimsu -w <our pid>`: `-w` ties the assertions to our pid, and this was verified
+to release them even when the parent is SIGKILLed.
+
+Also worth recording: `-u` without `-t` expires after five seconds, so within `-dimsu` it acts
+as a one-shot "turn the display on" while `-d` does the sustained work. That is intended.
+
+### Structural quoting for privileged commands
+
+`PrivilegedCommandRunner` now takes an executable path plus an argument array instead of a
+command string, and quotes each argument for the shell and then for the enclosing AppleScript
+literal. Previously the guarantee rested on callers remembering to pass only hard-coded
+literals — documented, but not enforced.
+
+Covered by injection tests, including a round trip through a real `/bin/sh` proving that
+arguments carrying `;`, `$(…)`, backticks, backslashes and both quote styles arrive intact as
+single arguments with nothing executed.
+
+One of those tests initially failed, and the assertion was at fault rather than the escaping:
+it searched for `" ;` in the output, which legitimately appears inside the correctly escaped
+`\" ;`. The replacement strips escape sequences first and then asserts that only the two
+delimiting quotes remain.
+
+Test count went from 23 to 40.
+
+---
+
 ## Known remaining items
 
 - Debug builds carry SwiftPM's default `com.apple.security.get-task-allow` entitlement.
   Release builds do not.
 - `CFBundleShortVersionString` / `CFBundleVersion` are hard-coded in `Resources/Info.plist`
   and not bumped by the install script.
-- `runPrivilegedCommand` still interpolates its argument into AppleScript source. Only
-  hard-coded literals are ever passed, and the call site is documented as such, but there
-  is no quoting helper enforcing it.
+- Logout and restart still leave lid-closed mode's override in place until the next launch;
+  fixing that would need a LaunchDaemon. Keep Awake is unaffected.
+
+See [TODO.md](TODO.md) for the current list, including the pending manual verification of the
+Keep Awake option.

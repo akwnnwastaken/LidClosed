@@ -28,8 +28,8 @@ final class MockPrivilegedRunner: PrivilegedCommandRunner, @unchecked Sendable {
         self.outcome = outcome
     }
 
-    func run(command: String) -> PrivilegedOutcome {
-        invocations.append(command)
+    func run(executablePath: String, arguments: [String]) -> PrivilegedOutcome {
+        invocations.append(([executablePath] + arguments).joined(separator: " "))
         return outcome
     }
 }
@@ -305,5 +305,236 @@ final class LidClosedTests: XCTestCase {
         let (pm, _, _, _) = makeManager()
         try Data().write(to: stateURL)
         XCTAssertTrue(pm.isOwnedByUs)
+    }
+}
+
+// MARK: - Privileged command quoting
+
+@MainActor
+final class PrivilegedQuotingTests: XCTestCase {
+
+    private typealias Runner = AppleScriptPrivilegedRunner
+
+    func testBuildsQuotedScriptForNormalArguments() {
+        let source = Runner.scriptSource("/usr/bin/pmset", ["disablesleep", "1"])
+        XCTAssertEqual(
+            source,
+            "do shell script \"'/usr/bin/pmset' 'disablesleep' '1'\" with administrator privileges"
+        )
+    }
+
+    /// A semicolon inside an argument must stay inside the quotes, not start a new command.
+    func testShellMetacharactersCannotStartASecondCommand() {
+        let quoted = Runner.shellQuoted("1; rm -rf /")
+        XCTAssertEqual(quoted, "'1; rm -rf /'")
+    }
+
+    /// The classic break-out attempt: a single quote to close our quoting early.
+    func testEmbeddedSingleQuoteIsNeutralised() {
+        let quoted = Runner.shellQuoted("a'b")
+        XCTAssertEqual(quoted, #"'a'\''b'"#)
+    }
+
+    func testDoubleQuoteIsEscapedForAppleScript() {
+        XCTAssertEqual(Runner.appleScriptEscaped("say \"hi\""), "say \\\"hi\\\"")
+    }
+
+    /// Backslashes must be doubled before quotes are escaped, or the escapes get escaped.
+    func testBackslashIsEscapedBeforeQuotes() {
+        XCTAssertEqual(Runner.appleScriptEscaped(#"a\"b"#), #"a\\\"b"#)
+    }
+
+    /// An argument carrying both quote styles must not be able to close the AppleScript
+    /// string literal early. Strip every escape sequence and the only double quotes left
+    /// should be the two delimiters.
+    func testHostileArgumentCannotTerminateTheAppleScriptString() {
+        let source = Runner.scriptSource("/usr/bin/pmset", [#"x" ; touch /tmp/pwned ; echo '"#])
+
+        var stripped = source.replacingOccurrences(of: #"\\"#, with: "")
+        stripped = stripped.replacingOccurrences(of: #"\""#, with: "")
+
+        XCTAssertEqual(
+            stripped.filter { $0 == "\"" }.count, 2,
+            "only the opening and closing delimiters may be unescaped quotes"
+        )
+    }
+
+    /// Round-trip through a real shell: whatever we quote must arrive at the program as one
+    /// intact argument, with no second command executed. This is the property the whole
+    /// argument-array API exists to guarantee.
+    func testQuotedArgumentsSurviveARealShellIntact() throws {
+        let hostile = [
+            "1; echo INJECTED",
+            "a'b",
+            #"x" ; echo INJECTED ; echo '"#,
+            "$(echo INJECTED)",
+            "`echo INJECTED`",
+            "back\\slash",
+            "spaces and 'quotes'"
+        ]
+
+        let shellCommand = (["/bin/echo"] + hostile)
+            .map(Runner.shellQuoted)
+            .joined(separator: " ")
+
+        let process = Process()
+        let pipe = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", shellCommand]
+        process.standardOutput = pipe
+        try process.run()
+        process.waitUntilExit()
+
+        let output = String(
+            data: pipe.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8
+        )?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        XCTAssertEqual(output, hostile.joined(separator: " "))
+        XCTAssertFalse(output?.contains("INJECTED\n") ?? true, "no argument may execute as a command")
+    }
+}
+
+// MARK: - Keep-awake option
+
+final class MockBackgroundProcess: BackgroundProcess, @unchecked Sendable {
+    var isRunning = true
+    private(set) var terminateCallCount = 0
+
+    func terminate() {
+        terminateCallCount += 1
+        isRunning = false
+    }
+}
+
+final class MockProcessLauncher: BackgroundProcessLauncher, @unchecked Sendable {
+    private(set) var invocations: [[String]] = []
+    var shouldThrow = false
+    var lastProcess: MockBackgroundProcess?
+
+    struct LaunchFailure: Error {}
+
+    func launch(executablePath: String, arguments: [String]) throws -> BackgroundProcess {
+        invocations.append([executablePath] + arguments)
+        if shouldThrow { throw LaunchFailure() }
+        let process = MockBackgroundProcess()
+        lastProcess = process
+        return process
+    }
+}
+
+@MainActor
+final class AwakeKeeperTests: XCTestCase {
+
+    func testStartsCaffeinateBoundToOurPid() {
+        let launcher = MockProcessLauncher()
+        let keeper = AwakeKeeper(launcher: launcher)
+
+        XCTAssertTrue(keeper.start())
+        XCTAssertTrue(keeper.isActive)
+
+        let expected = [
+            "/usr/bin/caffeinate",
+            "-dimsu",
+            "-w",
+            String(ProcessInfo.processInfo.processIdentifier)
+        ]
+        XCTAssertEqual(launcher.invocations, [expected])
+    }
+
+    func testStartIsIdempotent() {
+        let launcher = MockProcessLauncher()
+        let keeper = AwakeKeeper(launcher: launcher)
+
+        XCTAssertTrue(keeper.start())
+        XCTAssertTrue(keeper.start())
+        XCTAssertEqual(launcher.invocations.count, 1)
+    }
+
+    func testStopTerminatesTheChild() {
+        let launcher = MockProcessLauncher()
+        let keeper = AwakeKeeper(launcher: launcher)
+        XCTAssertTrue(keeper.start())
+
+        keeper.stop()
+        XCTAssertFalse(keeper.isActive)
+        XCTAssertEqual(launcher.lastProcess?.terminateCallCount, 1)
+    }
+
+    func testStopIsSafeWhenNotRunning() {
+        let keeper = AwakeKeeper(launcher: MockProcessLauncher())
+        keeper.stop()
+        XCTAssertFalse(keeper.isActive)
+    }
+
+    func testLaunchFailureLeavesKeeperInactive() {
+        let launcher = MockProcessLauncher()
+        launcher.shouldThrow = true
+        let keeper = AwakeKeeper(launcher: launcher)
+
+        XCTAssertFalse(keeper.start())
+        XCTAssertFalse(keeper.isActive)
+    }
+
+    /// A child that exited on its own must not still read as active.
+    func testChildExitingOnItsOwnClearsActiveState() {
+        let launcher = MockProcessLauncher()
+        let keeper = AwakeKeeper(launcher: launcher)
+        XCTAssertTrue(keeper.start())
+
+        launcher.lastProcess?.isRunning = false
+        XCTAssertFalse(keeper.isActive)
+    }
+}
+
+// MARK: - Single instance lock
+
+final class InstanceLockTests: XCTestCase {
+
+    private var tempDir: URL!
+
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+        tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("LockTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+    }
+
+    override func tearDownWithError() throws {
+        try? FileManager.default.removeItem(at: tempDir)
+        try super.tearDownWithError()
+    }
+
+    func testFirstAcquisitionSucceeds() {
+        let lock = InstanceLock(lockFileURL: tempDir.appendingPathComponent("instance.lock"))
+        XCTAssertTrue(lock.tryAcquire())
+    }
+
+    /// The second holder of the same lock file must be refused — this is what stops a
+    /// second instance from treating a live override as stale.
+    func testSecondAcquisitionOfSameFileIsRefused() {
+        let url = tempDir.appendingPathComponent("instance.lock")
+        let first = InstanceLock(lockFileURL: url)
+        let second = InstanceLock(lockFileURL: url)
+
+        XCTAssertTrue(first.tryAcquire())
+        XCTAssertFalse(second.tryAcquire())
+    }
+
+    func testDifferentLockFilesDoNotConflict() {
+        let a = InstanceLock(lockFileURL: tempDir.appendingPathComponent("a.lock"))
+        let b = InstanceLock(lockFileURL: tempDir.appendingPathComponent("b.lock"))
+
+        XCTAssertTrue(a.tryAcquire())
+        XCTAssertTrue(b.tryAcquire())
+    }
+
+    func testCreatesMissingParentDirectory() {
+        let nested = tempDir
+            .appendingPathComponent("does/not/exist", isDirectory: true)
+            .appendingPathComponent("instance.lock")
+
+        XCTAssertTrue(InstanceLock(lockFileURL: nested).tryAcquire())
+        XCTAssertTrue(FileManager.default.fileExists(atPath: nested.path))
     }
 }
