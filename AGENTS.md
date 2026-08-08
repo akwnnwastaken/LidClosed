@@ -111,7 +111,11 @@ Each of these was a real bug once. See [WALKTHROUGH.md](WALKTHROUGH.md) for the 
    `pmset` override, with a state file and recovery. `AwakeKeeper` owns the `caffeinate`
    child, with neither, because there is nothing to recover. Do not generalise the ownership
    logic over both.
-10. **Only one instance may run.** `InstanceLock` is acquired before `PowerManager.start()`.
+10. **The status line must describe both switches.** `StatusBarController.statusText` is
+    pure and covers all six combinations, each with a distinct string. A state the user
+    cannot distinguish is a state they cannot act on — and since neither mechanism implies
+    the other, reporting only one of them hides real information.
+11. **Only one instance may run.** `InstanceLock` is acquired before `PowerManager.start()`.
     Without it, a second instance reads the first one's live state file, concludes the
     override is stale, and tries to undo it.
 

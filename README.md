@@ -102,11 +102,16 @@ The binary will be at `.build/release/LidClosed`.
 
 ### Menu Bar States
 
-| State | Icon | Description |
-|-------|------|-------------|
-| Inactive | 🔒💻 | Normal sleep behavior |
-| Lid Closed Mode | 🔓💻 | Mac won't sleep even with the lid closed |
-| Keep Awake | ☕ | Mac stays awake while the lid is open |
+| Icon | Status line |
+|------|-------------|
+| 🔒💻 | ○ Inactive — normal sleep behavior |
+| ☕ | ◐ Awake — but sleeps if you close the lid |
+| 🔓💻 | ● Awake with the lid closed — display still sleeps |
+| 🔓💻 | ● Awake with the lid closed — display stays on |
+| 🔓💻 | ● Sleep disabled outside LidClosed — display still sleeps |
+| 🔓💻 | ● Sleep disabled outside LidClosed — display stays on |
+
+The status line always names both protections, because neither one implies the other. The icon reflects Lid Closed Mode when it is on, since that is the stronger of the two.
 
 ## Requirements
 

@@ -538,3 +538,77 @@ final class InstanceLockTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: nested.path))
     }
 }
+
+// MARK: - Status line
+
+@MainActor
+final class StatusTextTests: XCTestCase {
+
+    private func text(sleepDisabled: Bool, owned: Bool, keepingAwake: Bool) -> String {
+        StatusBarController.statusText(
+            isSleepDisabled: sleepDisabled,
+            isOwnedByUs: owned,
+            isKeepingAwake: keepingAwake
+        )
+    }
+
+    func testNothingActive() {
+        XCTAssertEqual(
+            text(sleepDisabled: false, owned: false, keepingAwake: false),
+            "○ Inactive — normal sleep behavior"
+        )
+    }
+
+    /// Keep Awake alone must say the lid is still a way to put the Mac to sleep.
+    func testKeepAwakeOnly() {
+        XCTAssertEqual(
+            text(sleepDisabled: false, owned: false, keepingAwake: true),
+            "◐ Awake — but sleeps if you close the lid"
+        )
+    }
+
+    /// Lid-closed mode alone must not imply the display stays on — it does not.
+    func testLidClosedModeOnly() {
+        XCTAssertEqual(
+            text(sleepDisabled: true, owned: true, keepingAwake: false),
+            "● Awake with the lid closed — display still sleeps"
+        )
+    }
+
+    func testBothActive() {
+        XCTAssertEqual(
+            text(sleepDisabled: true, owned: true, keepingAwake: true),
+            "● Awake with the lid closed — display stays on"
+        )
+    }
+
+    func testExternalOverrideAlone() {
+        XCTAssertEqual(
+            text(sleepDisabled: true, owned: false, keepingAwake: false),
+            "● Sleep disabled outside LidClosed — display still sleeps"
+        )
+    }
+
+    func testExternalOverridePlusKeepAwake() {
+        XCTAssertEqual(
+            text(sleepDisabled: true, owned: false, keepingAwake: true),
+            "● Sleep disabled outside LidClosed — display stays on"
+        )
+    }
+
+    /// Every combination must produce a distinct line: a state the user cannot distinguish
+    /// is a state they cannot act on.
+    func testAllSixCombinationsAreDistinct() {
+        var seen = Set<String>()
+        for sleepDisabled in [false, true] {
+            for owned in [false, true] {
+                for keepingAwake in [false, true] {
+                    // Ownership is only meaningful while sleep is disabled.
+                    guard sleepDisabled || !owned else { continue }
+                    seen.insert(text(sleepDisabled: sleepDisabled, owned: owned, keepingAwake: keepingAwake))
+                }
+            }
+        }
+        XCTAssertEqual(seen.count, 6)
+    }
+}

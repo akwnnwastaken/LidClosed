@@ -213,14 +213,32 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     }
 
     private func statusText() -> String {
-        if isSleepDisabled {
-            return powerManager.isOwnedByUs
-                ? "● Active — Managed by LidClosed"
-                : "● Active — Managed by system or another app"
+        Self.statusText(
+            isSleepDisabled: isSleepDisabled,
+            isOwnedByUs: powerManager.isOwnedByUs,
+            isKeepingAwake: awakeKeeper.isActive
+        )
+    }
+
+    /// Describes the combined effect of both switches.
+    ///
+    /// Neither mechanism covers the other — `pmset disablesleep` leaves the `displaysleep`
+    /// timer running, and `caffeinate` does not survive the lid closing — so the line has to
+    /// name both, or the user cannot tell which protection is actually in force. Pure and
+    /// `static` so all six combinations can be tested.
+    static func statusText(isSleepDisabled: Bool, isOwnedByUs: Bool, isKeepingAwake: Bool) -> String {
+        guard isSleepDisabled else {
+            return isKeepingAwake
+                ? "◐ Awake — but sleeps if you close the lid"
+                : "○ Inactive — normal sleep behavior"
         }
-        if awakeKeeper.isActive {
-            return "◐ Awake — but will sleep if the lid closes"
-        }
-        return "○ Inactive — Normal sleep behavior"
+
+        let lead = isOwnedByUs
+            ? "● Awake with the lid closed"
+            : "● Sleep disabled outside LidClosed"
+
+        return isKeepingAwake
+            ? "\(lead) — display stays on"
+            : "\(lead) — display still sleeps"
     }
 }
