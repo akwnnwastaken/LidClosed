@@ -1,117 +1,123 @@
 # HANDOFF
 
 Snapshot of where the work stands, so a fresh session can pick up without re-deriving
-context. **Updated 2026-08-09.** This file describes a point in time — if the commit log has
-moved well past the commits listed below, treat it as history and trust the code.
+context. **Updated 2026-08-09, at commit `56e5a5a`.** If the log has moved well past that,
+treat this as history and trust the code.
 
-Read [AGENTS.md](AGENTS.md) first for the safety rules and design invariants. This file is
-only "what just happened and what is next".
+Read [AGENTS.md](AGENTS.md) first — it holds the safety rules and the design invariants. This
+file is only "what just happened, and what is next".
 
 ---
 
 ## Where things stand
 
-Three rounds are complete and everything found in them is either fixed or recorded.
+Everything found across three rounds is either fixed or deliberately recorded. **Nothing is
+queued.**
 
 | Round | Outcome |
 |-------|---------|
-| First review (25 findings) | 22 fixed, 3 deliberately deferred |
-| Second review (11 findings, after the first round's fixes) | 11 fixed |
-| Manual test matrix (7 scenarios) | 7/7 passed |
+| First review (25 findings) | 22 fixed, 3 deferred |
+| Second review (11 findings, after the first round) | 11 fixed |
+| Manual test matrix (7 scenarios, real auth dialog) | 7/7 passed |
 | Remaining-work round (single instance, caffeinate, quoting) | 3 closed |
+| Keep Awake verification + display measurement | closed, one claim reverted |
 
-Full narrative of what changed and why: [WALKTHROUGH.md](WALKTHROUGH.md).
-Everything still open: [TODO.md](TODO.md).
-
-Relevant commits:
+Narrative of every change: [WALKTHROUGH.md](WALKTHROUGH.md). Everything still open, all of it
+by choice: [TODO.md](TODO.md).
 
 ```
-89656fb  Close remaining TODO items: single instance, caffeinate, quoting
+56e5a5a  Grey out Keep Awake while Lid Closed Mode is on
+8aa9f8e  Revert the display-sleep claim: measured, pmset disablesleep covers it too
+47fdb11  Add scripts/state.sh for inspecting live state
+c5f6724  Report both protections in the status line
+453eca3  Correct a wrong claim: the two mechanisms are complementary, not redundant
+54f16f0  Close remaining TODO items: single instance, caffeinate option, quoting
 7f117a2  Add AGENTS.md and HANDOFF.md
-c2cfdfe  Clarify caffeinate item: user-selectable option for lid-open use
 8e52fa6  Fix second-round review findings: test isolation, teardown, testability
-9595a46  Fix UI state sync for external overrides (Scenario 6)
-a8cc072  Apply Phase 1-3 fixes: state separation, root ownership, testing, UI caching
 ```
+
+Note `453eca3` followed by `8aa9f8e`: a claim was introduced and then reverted after being
+measured. The reverted state is the correct one — see the warning below.
 
 ## Verification status
 
 - `swift build` debug and release: clean, zero warnings.
-- `swift test`: 40 tests passing. Covers the `pmset -g` parser, the full transition table
+- `swift test`: **47 tests** passing. Covers the `pmset -g` parser; the full transition table
   (activate success/cancel/failure/external-override, deactivate
   success/cancel/failure/unowned, silent restore success/failure/unowned, external-change
-  syncing, state file contents), privileged-command quoting including a round trip through a
-  real shell, the `caffeinate` keeper, and the single-instance lock.
-- Manual scenarios verified against the real authentication dialog: enable with password,
-  enable cancelled, disable with password, disable cancelled (×4), `kill -9` followed by
-  relaunch recovery, external `pmset` change, and external override not being claimed.
-- Single-instance lock verified by running two real instances: the second logs
+  syncing, state file contents); privileged-command quoting, including a round trip through a
+  real `/bin/sh` with hostile arguments; the `caffeinate` keeper; the single-instance lock; and
+  every reachable status line.
+- Manual scenarios against the real authentication dialog: enable with password, enable
+  cancelled, disable with password, disable cancelled (×4), `kill -9` then relaunch recovery,
+  external `pmset` change, and external override not being claimed.
+- Keep Awake verified through the real menu, including that its `caffeinate` child exits by
+  itself after `pkill -9` on the app.
+- Single-instance lock verified with two real instances: the second logs
   `Another instance is already running` and exits without triggering recovery.
-- Empirically established along the way, because none of it could be assumed: AppleScript
-  really returns **-128** on cancellation; hardened runtime does **not** break
-  `do shell script`; `MainActor.assumeIsolated` back-deploys to macOS 13; `SleepDisabled`
-  persists in `/Library/Preferences/com.apple.PowerManagement.plist` across reboots; an
-  ad-hoc signature is **forgeable** without a certificate; an orphaned `caffeinate` child is
-  **not** reaped when its parent dies, which is why `-w <pid>` is mandatory.
+- Established by measurement, because none of it could be assumed: AppleScript really returns
+  **-128** on cancellation; hardened runtime does **not** break `do shell script`;
+  `MainActor.assumeIsolated` back-deploys to macOS 13; `SleepDisabled` persists in
+  `/Library/Preferences/com.apple.PowerManagement.plist` across reboots; an ad-hoc signature is
+  **forgeable** without a certificate; an orphaned `caffeinate` child is **not** reaped when its
+  parent dies, which is why `-w <pid>` is mandatory; and `pmset disablesleep` suppresses
+  **display** sleep as well.
 
 ## First thing to do in a new session
 
-Do not assume the machine is idle. The developer uses this app.
+Do not assume the machine is idle — the developer uses this app.
 
 ```bash
-/usr/bin/pmset -g | grep -i SleepDisabled
-cat "$HOME/Library/Application Support/LidClosed/state.json"
-pgrep -x LidClosed
+./scripts/state.sh
 ```
 
-An active override owned by a running instance is a normal working state, not a leak. See
-AGENTS.md for the escape hatch if it is genuinely stuck.
+An active override owned by a running instance is a normal working state, not a leak. AGENTS.md
+has the escape hatch if it is genuinely stuck.
 
 ---
 
 ## Next up
 
-### 1. Manual-test the Keep Awake option — [TODO.md](TODO.md) §1.1
+Nothing. Every remaining item in [TODO.md](TODO.md) is either a deliberate deferral (§1) or an
+architectural decision already taken (§2). Do not start on those without asking.
 
-The only pending task. The `caffeinate` path has unit coverage but has not been exercised
-through the real menu. The step that matters is the last one: enable it, `pkill -9 -x
-LidClosed`, and confirm the `caffeinate` child exits by itself — that is the property which
-keeps this mechanism free of recovery machinery, and it works only because of `-w`.
+If new work does come up, the highest-value unclaimed idea is a LaunchDaemon to make logout
+cleanup actually work (TODO §2.1) — it is the only remaining *functional* gap, as opposed to a
+stylistic one.
 
-### 2. Nothing else is queued
-
-Everything remaining in TODO.md is either a deliberate deferral (§2) or an architectural
-decision already taken (§3). Do not start on those without asking.
+---
 
 ## Decisions already made — please do not re-litigate
 
-A fresh reviewer tends to flag these as bugs. They are choices, with reasons:
+A fresh reviewer tends to flag these as bugs. They are choices, with reasons.
 
+- **Lid-closed mode covers strictly more than Keep Awake.** Measured with a timed idle test:
+  `pmset disablesleep 1` suppresses display sleep too, invisibly — `pmset -g` keeps printing a
+  plain `displaysleep 60` and `pmset -g assertions` reports `PreventUserIdleDisplaySleep 0`.
+  Keep Awake's value is no password, no persistent setting, and self-release on crash — **not**
+  extra coverage. A previous session inferred the opposite from those same `pmset` outputs and
+  had to revert it; do not repeat that without running a timed idle test.
+- **Keep Awake is greyed out and stopped while lid-closed mode is on.** It contributes nothing
+  there. Greying without stopping would leave a checked item the user cannot uncheck.
 - **The IOKit assertion inside `PowerManager` was removed on purpose.** It asserted only
-  `PreventUserIdleSystemSleep`, which `pmset disablesleep` already covers, and it did not
-  prevent lid-close sleep — so requiring both to agree created a state where sleep was
-  disabled with no way to turn it off. This is *not* an argument against `AwakeKeeper`, which
-  asserts display sleep too: `pmset disablesleep` does **not** keep the display on.
+  `PreventUserIdleSystemSleep`, which `pmset disablesleep` already covers, and did nothing for
+  lid-close sleep — so requiring both to agree created a state where sleep was disabled with no
+  way to turn it off.
 - **Cancelling Enable shows no alert; cancelling Disable does.** Cancelling an enable changes
   nothing and the menu already reads Inactive. Cancelling a disable leaves the Mac unable to
-  sleep, which is surprising and must be reported. The asymmetry is intentional.
-- **Recovery does not skip when the owning pid is still alive.** Pids are recycled, and
-  wrongly skipping recovery is the worse failure.
+  sleep, which is surprising and must be reported.
+- **Recovery does not skip when the owning pid is still alive.** Pids are recycled, and wrongly
+  skipping recovery is the worse failure. The second-instance problem that would otherwise
+  create is solved by `InstanceLock` instead.
+- **The two mechanisms keep separate lifecycles.** `PowerManager` has ownership tracking and
+  recovery because it mutates a persistent system setting; `AwakeKeeper` has neither because
+  `caffeinate -w` cleans itself up.
+- **`caffeinate` keeps `-dimsu` including `-u`.** Its five-second expiry is understood: it acts
+  as a one-shot display wake, and `-d` does the sustained work.
 - **Ad-hoc signing is kept, but is not claimed as a security control.** Root ownership of the
   installed bundle is the mitigation. Do not "strengthen" the docs back toward saying signing
   prevents tampering.
-- **No LaunchDaemon, no privileged helper, no notarization.** All three are deliberate scope
-  limits with the consequences written down in TODO.md §3. The logout gap is real and known:
-  logging out while lid-closed mode is Active leaves sleep disabled until the next launch.
-- **The two mechanisms are kept separate on purpose.** `PowerManager` has ownership tracking
-  and recovery because it mutates a persistent system setting; `AwakeKeeper` has neither
-  because `caffeinate -w` cleans itself up. Generalising one over the other would add
-  machinery to a path that does not need it.
-- **Lid-closed mode covers strictly more than Keep Awake.** Measured with a timed idle test:
-  `pmset disablesleep 1` suppresses display sleep as well, invisibly — `pmset -g` still prints
-  a plain `displaysleep 60`. Keep Awake's value is no password, no persistent setting and
-  self-release, not extra coverage. Do not re-add claims that the two protect different things.
-- **`caffeinate` keeps `-dimsu` including `-u`.** Its five-second expiry is understood: it
-  acts as a one-shot display wake, and `-d` does the sustained work.
-- **`install.sh` does nothing when run non-interactively.** That is a safety property, not an
-  oversight — it previously defaulted to running `sudo` in a pipe.
+- **No LaunchDaemon, no privileged helper, no notarization.** Deliberate scope limits, with the
+  consequences written down in TODO.md §2.
+- **`install.sh` does nothing when run non-interactively.** A safety property, not an oversight
+  — it previously defaulted to running `sudo` in a pipe.

@@ -188,20 +188,6 @@ Test count went from 23 to 40.
 
 ---
 
-## Known remaining items
-
-- Debug builds carry SwiftPM's default `com.apple.security.get-task-allow` entitlement.
-  Release builds do not.
-- `CFBundleShortVersionString` / `CFBundleVersion` are hard-coded in `Resources/Info.plist`
-  and not bumped by the install script.
-- Logout and restart still leave lid-closed mode's override in place until the next launch;
-  fixing that would need a LaunchDaemon. Keep Awake is unaffected.
-
-See [TODO.md](TODO.md) for the current list, including the pending manual verification of the
-Keep Awake option.
-
----
-
 ## 8. Measured: `pmset disablesleep` also suppresses display sleep (2026-08-09)
 
 The Keep Awake option was documented as covering something lid-closed mode did not: keeping
@@ -235,3 +221,18 @@ Acted on as well: since Keep Awake demonstrably adds nothing while lid-closed mo
 now greyed out there and relabelled "Keep Awake — covered by Lid Closed Mode", and a running
 `caffeinate` child is stopped. Greying alone would have recreated a familiar bug — a checked
 item the user cannot uncheck — so the two changes only make sense together.
+
+---
+
+## Known remaining items
+
+Everything below is deliberate; see [TODO.md](TODO.md) for the reasoning.
+
+- Debug builds carry SwiftPM's default `com.apple.security.get-task-allow` entitlement. Release
+  builds do not.
+- `CFBundleShortVersionString` / `CFBundleVersion` are hard-coded in `Resources/Info.plist` and
+  not bumped by the install script.
+- Logout and restart still leave lid-closed mode's override in place until the next launch;
+  fixing that needs a LaunchDaemon. This is the only remaining functional gap. Keep Awake is
+  unaffected, because `caffeinate -w` releases itself.
+- No privileged helper and no notarization.
