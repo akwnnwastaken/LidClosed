@@ -28,13 +28,16 @@ LidClosed sits in your menu bar and lets you toggle **lid-closed mode** with a s
 
 LidClosed uses `pmset disablesleep 1` to disable system sleep entirely, including lid-close sleep (requires admin password on activation). 
 
-When you quit the app or disable the mode, sleep behavior is fully restored.
+Disabling the mode, or quitting from the menu, prompts for your password again and restores normal sleep behavior.
 
 ### Safety Features
 
-- **State Tracking** — The app writes a state file to `~/Library/Application Support/LidClosed` when it activates the override. It only attempts to disable the override if it knows it owns it.
-- **Crash Recovery** — If the app crashes or is force-killed, the next launch automatically detects the stale state file and re-enables sleep.
-- **Security** — The installation script sets root ownership (`root:wheel`) on the `.app` bundle to prevent local privilege escalation, and ad-hoc signs the application.
+- **State Tracking** — The app writes a state file to `~/Library/Application Support/LidClosed` when it activates the override, and only ever disables an override it knows it owns. If sleep was already disabled by something else, LidClosed leaves it alone.
+- **Crash Recovery** — If the app crashes or is force-killed, the next launch detects the stale state file and offers to re-enable sleep. If a restore fails or you cancel the prompt, the state file is kept so recovery can be retried.
+- **Security** — The installation script installs the bundle with root ownership (`root:wheel`), so a process running as your user cannot swap the executable and inherit the root privileges the app requests. The bundle is also ad-hoc signed, which makes accidental corruption detectable — note that ad-hoc signatures are not a defence against a determined local attacker, since anyone can re-sign without a certificate.
+
+> [!NOTE]
+> Logout and restart cannot be cleaned up automatically: restoring sleep needs an admin password, and there is nobody to type one at logout. If you log out while LidClosed is Active, sleep stays disabled until you launch LidClosed again — or run `sudo pmset disablesleep 0` yourself.
 
 ## Installation
 

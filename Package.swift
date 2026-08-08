@@ -9,7 +9,6 @@ let package = Package(
             name: "LidClosed",
             path: "Sources",
             linkerSettings: [
-                .linkedFramework("IOKit"),
                 .linkedFramework("AppKit")
             ]
         ),

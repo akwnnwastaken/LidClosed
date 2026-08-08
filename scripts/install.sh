@@ -63,38 +63,55 @@ else
     echo "  ⚠️  No icon found at ${ICON_SOURCE}, skipping icon"
 fi
 
+# Ad-hoc signing seals the bundle so accidental corruption is detectable. It is NOT a
+# defence against a local attacker: anyone can re-sign ad-hoc without a certificate.
+# Root ownership below is what actually protects the bundle.
 echo "🔐 Ad-hoc signing bundle..."
 codesign --force --options runtime -s - "${APP_PATH}"
+codesign --verify --strict "${APP_PATH}"
 
 echo ""
 echo "✅ App bundle created: ${APP_PATH}"
 echo ""
 
-# Install to /Applications
+# Install to /Applications. Default to NOT installing: this step needs sudo and writes
+# outside the project, so a piped or CI invocation must never trigger it silently.
+REPLY="n"
 if [ -t 0 ]; then
-    read -p "📲 Install to /Applications? (Requires sudo for root ownership) (y/n) " -n 1 -r
+    read -r -n 1 -p "📲 Install to /Applications? (requires sudo for root ownership) (y/n) " REPLY || true
     echo ""
-else
-    # Non-interactive fallback
-    REPLY="y"
 fi
 
-if [[ $REPLY =~ ^[Yy]$ ]]; then
-    if [ -d "/Applications/${BUNDLE_NAME}" ]; then
-        echo "  Removing old version..."
-        sudo rm -rf "/Applications/${BUNDLE_NAME}"
-    fi
+if [[ "${REPLY}" =~ ^[Yy]$ ]]; then
+    STAGING="/Applications/.${BUNDLE_NAME}.staging"
+    FINAL="/Applications/${BUNDLE_NAME}"
 
-    echo "  Copying to /Applications and securing permissions..."
-    sudo cp -R "${APP_PATH}" "/Applications/"
-    sudo chown -R root:wheel "/Applications/${BUNDLE_NAME}"
-    
-    echo "  ✅ Installed to /Applications/${BUNDLE_NAME}"
+    echo "  Staging new version..."
+    sudo rm -rf "${STAGING}"
+    sudo cp -R "${APP_PATH}" "${STAGING}"
+
+    # root:wheel ownership is the real mitigation against local privilege escalation:
+    # the app runs commands as root via an admin prompt, so a bundle writable by the
+    # logged-in user would let any user-level process swap the binary and inherit root.
+    echo "  Securing permissions (root:wheel)..."
+    sudo chown -R root:wheel "${STAGING}"
+    sudo chmod -R go-w "${STAGING}"
+
+    # Swap only once the new copy is fully staged, so a failure never leaves
+    # /Applications without an app.
+    echo "  Installing..."
+    sudo rm -rf "${FINAL}"
+    sudo mv "${STAGING}" "${FINAL}"
+
+    echo "  ✅ Installed to ${FINAL}"
     echo ""
     echo "🚀 You can now find it with Spotlight (Cmd+Space → 'LidClosed')"
 else
     echo ""
-    echo "ℹ️  To install manually (securely):"
+    echo "ℹ️  Not installed. To install manually (securely):"
     echo "   sudo cp -R ${APP_PATH} /Applications/"
     echo "   sudo chown -R root:wheel /Applications/${BUNDLE_NAME}"
+    echo ""
+    echo "   Note: launching the copy in ${DIST_DIR}/ instead leaves the bundle writable"
+    echo "   by your user account, which reopens the privilege-escalation path."
 fi
