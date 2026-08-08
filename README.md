@@ -39,14 +39,18 @@ Reach for this one when you do not actually need clamshell operation: it needs *
 | | Lid Closed Mode | Keep Awake |
 |---|---|---|
 | Mechanism | `pmset disablesleep 1` | `caffeinate -dimsu -w <pid>` |
+| Keeps the system awake | ✅ | ✅ |
 | Works with the lid closed | ✅ | ❌ |
+| Keeps the **display** on | ❌ | ✅ |
 | Admin password | required | not needed |
 | Changes a system setting | yes, and it persists across reboots | no |
 | If the app crashes | recovered on next launch | released automatically |
 
 Disabling lid-closed mode, or quitting from the menu, prompts for your password again and restores normal sleep behavior. Keep Awake just stops.
 
-The two are independent — you can run either or both. Lid Closed Mode already covers everything Keep Awake does, so turning both on is harmless but redundant.
+The two are independent and neither one covers the other, so running both is a real combination rather than a redundant one: **system never sleeps *and* the display never blanks.**
+
+Lid Closed Mode disables system sleep, but the `displaysleep` timer keeps running — your screen will still turn off on schedule. Only Keep Awake holds the display on. Turn on both if you are watching something on an external monitor and also want the lid to be closeable.
 
 ### Safety Features
 

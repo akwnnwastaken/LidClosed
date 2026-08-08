@@ -42,10 +42,12 @@ privileged command failed.
 
 **What was done:**
 
-- **IOKit assertions removed entirely.** `pmset disablesleep 1` already prevents both idle
-  sleep and lid-close sleep, so the second mechanism was redundant — and requiring both to
-  agree was the direct cause of the worst bug (sleep left disabled with no recovery marker
-  and no way to switch it off from the UI).
+- **IOKit assertions removed entirely.** The assertion used here was
+  `kIOPMAssertPreventUserIdleSystemSleep`, which `pmset disablesleep 1` already covers, and it
+  did nothing for lid-close sleep — so it was redundant, and requiring both to agree was the
+  direct cause of the worst bug (sleep left disabled with no recovery marker and no way to
+  switch it off from the UI). Note this does not generalise: the `caffeinate` option added in
+  §7 also asserts *display* sleep, which `pmset disablesleep` genuinely does not cover.
 - **Ownership separated from system state.** `isSleepDisabledSystemWide` reads
   `/usr/bin/pmset -g`; `isOwnedByUs` checks for our state file. The app only ever turns off
   an override it created.

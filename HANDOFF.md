@@ -87,9 +87,11 @@ decision already taken (§3). Do not start on those without asking.
 
 A fresh reviewer tends to flag these as bugs. They are choices, with reasons:
 
-- **IOKit power assertions were removed on purpose.** They do not prevent lid-close sleep, so
-  requiring both mechanisms to agree created a state where sleep was disabled with no way to
-  turn it off. `pmset disablesleep` alone covers everything.
+- **The IOKit assertion inside `PowerManager` was removed on purpose.** It asserted only
+  `PreventUserIdleSystemSleep`, which `pmset disablesleep` already covers, and it did not
+  prevent lid-close sleep — so requiring both to agree created a state where sleep was
+  disabled with no way to turn it off. This is *not* an argument against `AwakeKeeper`, which
+  asserts display sleep too: `pmset disablesleep` does **not** keep the display on.
 - **Cancelling Enable shows no alert; cancelling Disable does.** Cancelling an enable changes
   nothing and the menu already reads Inactive. Cancelling a disable leaves the Mac unable to
   sleep, which is surprising and must be reported. The asymmetry is intentional.

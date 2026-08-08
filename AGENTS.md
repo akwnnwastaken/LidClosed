@@ -136,6 +136,12 @@ Each of these was a real bug once. See [WALKTHROUGH.md](WALKTHROUGH.md) for the 
   drop `-w`.
 - **`caffeinate -u` without `-t` expires after five seconds.** In `-dimsu` it therefore acts
   as a one-shot "turn the display on"; `-d` does the sustained work. Intended, not a bug.
+- **`pmset disablesleep 1` does not prevent *display* sleep.** It blocks system sleep; the
+  `displaysleep` timer keeps running independently. Verified: with `SleepDisabled 1` active,
+  `pmset -g` still reported `displaysleep 60 (display sleep prevented by caffeinate)` — only
+  caffeinate was holding the display on. So the two mechanisms are complementary, not
+  overlapping, and enabling both is a legitimate combination rather than a redundant one.
+  Do not make them mutually exclusive.
 - **Ad-hoc code signing is not a security boundary.** Anyone can replace the binary and
   re-sign ad-hoc without a certificate; verification then passes again. `chown root:wheel`
   on the installed bundle is the actual mitigation. Do not describe signing as preventing
