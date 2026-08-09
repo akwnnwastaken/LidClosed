@@ -15,25 +15,98 @@ The boot daemon closed the large half of this problem: every way the Mac goes *d
 restart, shutdown, kernel panic, power loss, a flat battery — is now cleaned up on the way
 back up, before anyone logs in. What is left is the case where nothing reboots.
 
-Logging out while lid-closed mode is Active terminates the app but not the daemon, which only
-runs at boot. So `SleepDisabled 1` stays set at the login window until somebody logs in and
-launches LidClosed, or runs `sudo pmset disablesleep 0`. On a laptop that means it will not
-sleep while sitting at the login screen.
+**Status: analysed, deliberately not started. Deferred 2026-08-09, to be revisited.** No
+decision has been taken between the options below — the analysis is recorded here so it does
+not have to be redone.
 
-Two ways to close it, neither obviously worth it:
+#### What happens, step by step
 
-- **A persistent root service the app talks to.** The service notices the connection drop at
-  logout and restores sleep. This is the textbook answer and it is genuinely complete — but it
-  means a root process running continuously with the ability to change system power settings,
-  which is a larger standing risk than the gap it removes. It also pulls in 2.1 below, since
-  the connection needs a code-requirement check to be worth anything.
-- **A timer.** `StartInterval` on the daemon, restoring sleep once the marker is present and
-  no LidClosed is running. Simple, but it changes behaviour: a crash while lid-closed mode is
-  on would re-enable sleep a few minutes later instead of at the next launch, which could
-  interrupt exactly the overnight job the mode was switched on for.
+1. `loginwindow` sends the app SIGTERM.
+2. The signal handler runs `attemptSilentRestore()`, which calls `pmset disablesleep 0` as the
+   user and **fails** — it needs root, and there is nobody to authenticate.
+3. `state.json` is kept on purpose, for next-launch recovery.
+4. The `/var/db` marker is kept too: removing it also needs root.
+5. The app exits.
+6. **The daemon never gets a turn.** LaunchDaemons are system-wide and are not unloaded at
+   logout; ours ran at boot and exited, and nothing triggers it again.
 
-The current position: leave it. The residual is bounded, visible in `./scripts/state.sh`, and
-documented in the README.
+So `SleepDisabled 1` stays set at the login window until somebody logs in and launches
+LidClosed, runs `sudo pmset disablesleep 0`, or restarts. On a laptop off mains power that is
+battery drain while the machine sits at the login screen.
+
+#### Why it is structurally awkward
+
+Undoing `pmset disablesleep` needs root, and at logout nobody can authenticate. The fix
+therefore has to be something that *already holds root and is still alive at logout*. Daemons
+qualify — but launchd offers a daemon no "user logged out" trigger, because daemons are
+deliberately independent of sessions. The daemon has to notice the app's absence by itself.
+
+#### Options
+
+**A — persistent root service plus XPC.** `KeepAlive` daemon holding a Mach service; the app
+connects and declares ownership, and the connection dropping at logout fires the restore.
+Textbook, and genuinely complete: logout, crash, force-quit, immediately.
+
+The cost is not the code. It is a root process running continuously that can change system
+power settings, and — once it accepts instructions — must verify the caller's code signature
+via its audit token. A meaningful check needs a stable designated requirement, which means a
+paid Developer ID: against an ad-hoc signature the requirement is forgeable and the check is
+theatre. Skip the check and *any* local process can ask a root service to change power
+settings, which is strictly worse than today. So A drags in §2.1 and §2.2 as prerequisites.
+Not a bigger patch — a different project.
+
+**B — a plain timer.** `StartInterval` on the existing daemon: if the marker is present and no
+LidClosed is running, restore sleep. No IPC, no persistent process, no signing problem.
+
+Rejected as it stands, because it cannot tell "logged out" from "crashed while I was using
+it". Today a crash with lid-closed mode on leaves the Mac awake until the next launch, which
+asks. Under B sleep returns a few minutes later — potentially killing the overnight job the
+mode was switched on for.
+
+**C — B, gated on nobody being logged in.** The refinement that removes B's objection: act
+only when the console has no user. `stat -f%Su /dev/console` reports the logged-in user's name
+during a session (measured: `ahmed`), and is expected to report `root` at the login window. The
+condition becomes *marker present **and** console user is `root`*.
+
+- Logout → cleaned up within the poll interval.
+- Crash during a session → untouched, current behaviour preserved.
+- No new attack surface: no IPC, no persistent process, no code-requirement chain.
+
+Cost: a root one-shot waking every N minutes indefinitely, and a dependency on `/dev/console`
+ownership as the logged-out signal.
+
+> [!IMPORTANT]
+> **The `root` half of that signal is unmeasured** — confirming it requires actually logging
+> out. If it is wrong, C does not work. Verify it before writing any code.
+
+**D — a `LoginWindow`-session LaunchAgent.** `LimitLoadToSessionType: LoginWindow` starts an
+agent as the login window comes up, which is the right *trigger* for once. Whether such an
+agent runs with enough privilege to change power settings on current macOS is **not known** —
+this was not researched. Do not propose it as a solution until it is.
+
+#### How bad the gap actually is
+
+| | |
+|---|---|
+| Needs | mode on, log out, **not** restart/shutdown, and not log back in |
+| Effect | no sleep at the login window; battery drain if unplugged |
+| Visible | yes — `./scripts/state.sh` |
+| Self-limiting | any restart or shutdown fixes it; so does logging in and launching the app |
+| Frequency | on a single-user Mac, logging out usually means shutting down — rare |
+
+Real, but narrow, and not silent.
+
+#### Recommendation on file
+
+**C**, if it is closed at all: roughly fifteen lines in the helper plus one plist key, keeping
+crash behaviour intact and adding no standing privilege. First step is a measurement, not code
+— check `stat -f%Su /dev/console` at the login window.
+
+**A is not recommended**: it depends on a paid Developer ID and, done carelessly, leaves
+security worse than it is now. **B alone is not recommended**; C is its corrected form.
+
+Leaving it open is also a defensible answer, which is why this section exists rather than a
+patch.
 
 ---
 

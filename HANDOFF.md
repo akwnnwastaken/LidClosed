@@ -150,8 +150,14 @@ place. AGENTS.md has the escape hatch if something is genuinely stuck.
 ## Next up
 
 One item, deliberately not started: **logout while the Mac stays on** still leaves the override
-in place, because nothing reboots and the daemon only runs at boot. TODO.md §1.1 has the two
-candidate designs and why neither is obviously worth it. Do not start on it without asking.
+in place, because nothing reboots and the daemon only runs at boot.
+
+TODO.md §1.1 now carries the full analysis rather than a summary — what happens step by step,
+why the root requirement makes it awkward, four candidate designs (A–D) with their real costs,
+a recommendation, and the one measurement that has to come before any code. It was deferred on
+2026-08-09 with no decision taken between the options. **Read that section before touching
+this, and do not start without asking** — the cheap-looking option is the one that quietly
+makes security worse.
 
 ---
 
