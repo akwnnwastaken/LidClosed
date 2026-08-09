@@ -38,15 +38,6 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     /// One `pmset` invocation serves both purposes.
     private func refreshState() {
         isSleepDisabled = powerManager.syncStateWithSystem()
-
-        // While system sleep is disabled, `caffeinate` provably contributes nothing —
-        // `pmset disablesleep` suppresses display sleep as well, measured directly. Keeping
-        // the child alive would be pure waste, and it would leave a checked menu item that
-        // the user cannot uncheck once the item is disabled below.
-        if isSleepDisabled && awakeKeeper.isActive {
-            NSLog("[LidClosed] Lid-closed mode covers keep-awake — stopping the caffeinate child")
-            awakeKeeper.stop()
-        }
     }
 
     // MARK: - Menu Construction
@@ -80,8 +71,13 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
         // A checkmark item: this one is an independent option rather than a state change to
         // the system, so it reads as a setting instead of an action.
-        keepAwakeMenuItem = NSMenuItem(title: "", action: #selector(keepAwakeAction), keyEquivalent: "k")
+        keepAwakeMenuItem = NSMenuItem(
+            title: "Keep Awake (Lid Open)",
+            action: #selector(keepAwakeAction),
+            keyEquivalent: "k"
+        )
         keepAwakeMenuItem?.target = self
+        keepAwakeMenuItem?.isEnabled = true
         menu.addItem(keepAwakeMenuItem!)
 
         menu.addItem(NSMenuItem.separator())
@@ -126,10 +122,6 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     /// Toggles the `caffeinate`-backed option. Independent of lid-closed mode: no password,
     /// no persistent system setting, nothing to recover.
     @objc private func keepAwakeAction() {
-        // The item is disabled in this state, so this is belt-and-braces against a stray
-        // key equivalent.
-        guard !isSleepDisabled else { return }
-
         if awakeKeeper.isActive {
             awakeKeeper.stop()
         } else if !awakeKeeper.start() {
@@ -183,17 +175,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         updateIcon()
         statusMenuItem?.title = statusText()
         toggleMenuItem?.title = toggleText()
-        keepAwakeMenuItem?.title = Self.keepAwakeTitle(isSleepDisabled: isSleepDisabled)
         keepAwakeMenuItem?.state = awakeKeeper.isActive ? .on : .off
-        // Disabled rather than hidden: a vanishing item is more confusing than a greyed one,
-        // and the title explains why it is unavailable without needing a dialog.
-        keepAwakeMenuItem?.isEnabled = !isSleepDisabled
-    }
-
-    /// Keep Awake is unavailable while lid-closed mode is on, because it adds nothing there.
-    /// The title carries the reason, since a disabled item cannot be clicked to explain itself.
-    static func keepAwakeTitle(isSleepDisabled: Bool) -> String {
-        isSleepDisabled ? "Keep Awake — covered by Lid Closed Mode" : "Keep Awake (Lid Open)"
     }
 
     private func updateIcon() {
@@ -240,15 +222,14 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
     /// Describes the combined effect of both switches.
     ///
-    /// `pmset disablesleep 1` suppresses display sleep as well as system sleep — measured
-    /// directly: idle for 207s with `displaysleep 60` and no assertion held, and the display
-    /// stayed on. Note that `pmset -g` does not reveal this; it still prints `displaysleep 60`
-    /// with no "prevented by" annotation, which is exactly what made an earlier version of
-    /// this comment claim the opposite.
+    /// The two mechanisms cover different things, so the line names both.
     ///
-    /// Keep Awake therefore adds nothing while lid-closed mode is on, and `refreshState()`
-    /// stops it there — so `isKeepingAwake` only affects the line when sleep is not already
-    /// disabled. Pure and `static` so every combination can be tested.
+    /// `pmset disablesleep 1` does **not** hold the display on: locking the screen with only
+    /// lid-closed mode active turns the display off, while locking it with only Keep Awake
+    /// active does not. Do not try to settle this with an idle-timeout test — see the
+    /// `UserIsActive` trap in AGENTS.md.
+    ///
+    /// Pure and `static` so every combination can be tested.
     static func statusText(isSleepDisabled: Bool, isOwnedByUs: Bool, isKeepingAwake: Bool) -> String {
         guard isSleepDisabled else {
             return isKeepingAwake
@@ -256,8 +237,12 @@ final class StatusBarController: NSObject, NSMenuDelegate {
                 : "○ Inactive — normal sleep behavior"
         }
 
-        return isOwnedByUs
-            ? "● Awake — even with the lid closed"
+        let lead = isOwnedByUs
+            ? "● Awake with the lid closed"
             : "● Sleep disabled outside LidClosed"
+
+        return isKeepingAwake
+            ? "\(lead) — display stays on too"
+            : "\(lead) — display can still turn off"
     }
 }

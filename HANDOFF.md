@@ -20,7 +20,8 @@ queued.**
 | Second review (11 findings, after the first round) | 11 fixed |
 | Manual test matrix (7 scenarios, real auth dialog) | 7/7 passed |
 | Remaining-work round (single instance, caffeinate, quoting) | 3 closed |
-| Keep Awake verification + display measurement | closed, one claim reverted |
+| Keep Awake verification | passed |
+| Display question (three attempts) | settled by the lock-screen test |
 
 Narrative of every change: [WALKTHROUGH.md](WALKTHROUGH.md). Everything still open, all of it
 by choice: [TODO.md](TODO.md).
@@ -42,8 +43,10 @@ c5f6724  Report both protections in the status line
 8e52fa6  Fix second-round review findings: test isolation, teardown, testability
 ```
 
-Note `453eca3` followed by `8aa9f8e`: a claim was introduced and then reverted after being
-measured. The reverted state is the correct one — see the warning below.
+Read the display-related commits as a sequence, not individually: `453eca3` claimed the two
+mechanisms are complementary, `8aa9f8e` and `56e5a5a` reversed that on the strength of a
+mismeasured idle test, and the latest commit restores it after the lock-screen test settled the
+question. **`453eca3`'s conclusion is the correct one.** WALKTHROUGH.md §8 has the full account.
 
 ## Verification status
 
@@ -97,14 +100,15 @@ stylistic one.
 
 A fresh reviewer tends to flag these as bugs. They are choices, with reasons.
 
-- **Lid-closed mode covers strictly more than Keep Awake.** Measured with a timed idle test:
-  `pmset disablesleep 1` suppresses display sleep too, invisibly — `pmset -g` keeps printing a
-  plain `displaysleep 60` and `pmset -g assertions` reports `PreventUserIdleDisplaySleep 0`.
-  Keep Awake's value is no password, no persistent setting, and self-release on crash — **not**
-  extra coverage. A previous session inferred the opposite from those same `pmset` outputs and
-  had to revert it; do not repeat that without running a timed idle test.
-- **Keep Awake is greyed out and stopped while lid-closed mode is on.** It contributes nothing
-  there. Greying without stopping would leave a checked item the user cannot uncheck.
+- **The two mechanisms are complementary and both stay available.** `pmset disablesleep` does
+  not hold the display on; `caffeinate` does. Settled by locking the screen — with only
+  lid-closed mode active the display turns off, with only Keep Awake active it stays on.
+  **Do not use an idle-timeout test to re-check this.** Two earlier sessions got opposite wrong
+  answers, the second because `UserIsActive` assertions (`rcd`, `powerd`'s `lidopen`) had held
+  the display on for tens of minutes and do not show up under `PreventUserIdleDisplaySleep`.
+  See WALKTHROUGH.md §8 and the trap in AGENTS.md.
+- **Keep Awake was briefly greyed out while lid-closed mode was on, and that was reverted.** It
+  rested on the mismeasurement above. Do not reintroduce it without the lock-screen check.
 - **The IOKit assertion inside `PowerManager` was removed on purpose.** It asserted only
   `PreventUserIdleSystemSleep`, which `pmset disablesleep` already covers, and did nothing for
   lid-close sleep — so requiring both to agree created a state where sleep was disabled with no

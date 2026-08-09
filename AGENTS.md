@@ -120,12 +120,11 @@ Each of these was a real bug once. See [WALKTHROUGH.md](WALKTHROUGH.md) for the 
    `pmset` override, with a state file and recovery. `AwakeKeeper` owns the `caffeinate`
    child, with neither, because there is nothing to recover. Do not generalise the ownership
    logic over both.
-10. **Keep Awake is unavailable while lid-closed mode is on.** `refreshState()` stops the
-    `caffeinate` child and `updateUI()` greys the item with an explanatory title, because
-    lid-closed mode already covers it. Disabled rather than hidden, and stopped rather than
-    left checked — a greyed item the user cannot uncheck is the dead end this repo already
-    fixed once on the other toggle. Consequence: only four UI states are reachable, and
-    `statusText` has a distinct line for each.
+10. **The status line must describe both switches, and both stay independently available.**
+    Neither mechanism covers the other, so reporting one hides real information.
+    `statusText` is pure and gives all six combinations a distinct string. Keep Awake was
+    briefly greyed out while lid-closed mode was on, on the strength of a mismeasurement; do
+    not do that again without the lock-screen check above.
 11. **Only one instance may run.** `InstanceLock` is acquired before `PowerManager.start()`.
     Without it, a second instance reads the first one's live state file, concludes the
     override is stale, and tries to undo it.
@@ -151,14 +150,22 @@ Each of these was a real bug once. See [WALKTHROUGH.md](WALKTHROUGH.md) for the 
   drop `-w`.
 - **`caffeinate -u` without `-t` expires after five seconds.** In `-dimsu` it therefore acts
   as a one-shot "turn the display on"; `-d` does the sustained work. Intended, not a bug.
-- **`pmset disablesleep 1` suppresses display sleep too, and `pmset -g` does not show it.**
-  Measured: `SleepDisabled 1`, `displaysleep 60`, no assertion held, machine idle for 207
-  seconds — the display never turned off. Throughout, `pmset -g` kept printing a plain
-  `displaysleep 60` with no "prevented by" annotation and `pmset -g assertions` reported
-  `PreventUserIdleDisplaySleep 0`. Reading those outputs and concluding the display would
-  still sleep is a mistake this repo has already made once; only a timed idle test settles it.
-  Consequence: lid-closed mode covers strictly more than Keep Awake, so the two are redundant
-  when both on — not complementary.
+- **`pmset disablesleep 1` does not hold the display on. Keep Awake does. Settle it by
+  locking the screen, never by an idle test.** Locking with only lid-closed mode active turns
+  the display off; locking with only Keep Awake active leaves it on. That is the reliable
+  discriminator, and it takes seconds.
+
+  An idle-timeout test is **not** reliable here, and this repo got it wrong twice before
+  finding out why. `UserIsActive` assertions routinely hold the display on for tens of
+  minutes — during one 207-second idle test, `rcd` held `UserIsActive "com.apple.rcdevent"`
+  for 54 minutes and `powerd` held `UserIsActive "com.apple.powermanagement.lidopen"`. None of
+  them appear under `PreventUserIdleDisplaySleep`, which read `0` the whole time, and
+  `pmset -g` printed a plain `displaysleep 60`. The display stayed on for reasons that had
+  nothing to do with `SleepDisabled`, and the result was mistaken for evidence.
+
+  If you must probe the idle path, sample `pmset -g assertions` throughout and look for
+  `UserIsActive` and `InternalPreventDisplaySleep` as well — not just
+  `PreventUserIdleDisplaySleep`.
 - **Ad-hoc code signing is not a security boundary.** Anyone can replace the binary and
   re-sign ad-hoc without a certificate; verification then passes again. `chown root:wheel`
   on the installed bundle is the actual mitigation. Do not describe signing as preventing

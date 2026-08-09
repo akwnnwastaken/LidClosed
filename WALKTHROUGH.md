@@ -188,41 +188,42 @@ Test count went from 23 to 40.
 
 ---
 
-## 8. Measured: `pmset disablesleep` also suppresses display sleep (2026-08-09)
+## 8. The display question, settled on the third attempt (2026-08-09)
 
-The Keep Awake option was documented as covering something lid-closed mode did not: keeping
-the display on. That was inferred from `pmset -g` printing
-`displaysleep 60 (display sleep prevented by caffeinate)` while caffeinate ran — which only
-showed caffeinate was holding the display, not that anything else would let it sleep.
+Whether lid-closed mode keeps the display on was claimed both ways before being measured
+properly. The record matters more than the answer, because the wrong method looked convincing.
 
-A timed idle test settled it. With `SleepDisabled 1`, `displaysleep 60`, Keep Awake off and no
-assertion held, the machine was left untouched and idle time was sampled every five seconds. It
-reached **207 seconds** and the display never turned off; `pmset -g log` recorded no
-`Display is turned off` event for the whole window.
+**What is true.** `pmset disablesleep 1` does **not** hold the display on; `caffeinate -dimsu`
+does. The discriminator is the lock screen, and it takes seconds: lock with only lid-closed mode
+active and the display turns off; lock with only Keep Awake active and it stays on. So the two
+mechanisms are complementary, and both remain independently available.
 
-So lid-closed mode covers strictly more than Keep Awake, and the two are **redundant** when
-both are on, not complementary. What Keep Awake still buys is real but different: no admin
-password, no persistent system setting, and automatic release if the app dies.
+**Why the earlier attempt was wrong.** An idle-timeout test was run instead: `SleepDisabled 1`,
+`displaysleep 60`, Keep Awake off, machine untouched for 207 seconds. The display never turned
+off, and that was taken as proof that `SleepDisabled` suppresses display sleep. It proved
+nothing. The `pmset` log for the test window shows what was actually holding the display:
 
-Two things worth keeping from this:
+```
+PID 43137(rcd)   UserIsActive "com.apple.rcdevent"                 00:54:31
+PID 342(powerd)  UserIsActive "com.apple.powermanagement.lidopen"  00:11:45
+```
 
-- `pmset -g` and `pmset -g assertions` do **not** reveal this suppression. They keep reporting
-  a plain `displaysleep 60` and `PreventUserIdleDisplaySleep 0`. Inferring display behaviour
-  from them is how the wrong claim was made in the first place.
-- Observing a display timeout requires the machine to be genuinely idle. An earlier attempt at
-  this test was inconclusive because measuring and reporting the result is itself activity that
-  resets the idle counter; the fix was to sample idle time in the background and read the log
-  afterwards.
+`UserIsActive` assertions prevent display sleep and are held routinely, for tens of minutes at a
+time. They do not appear under `PreventUserIdleDisplaySleep`, which read `0` throughout, and
+`pmset -g` printed a plain `displaysleep 60` with no annotation. The pre-test assertion check
+looked only at `PreventUserIdleDisplaySleep`, so it reported a clear field when the field was not
+clear.
 
-Reverted as a result: the README comparison row, the status-line strings that promised
-"display stays on" / "display still sleeps", and the corresponding AGENTS.md entry.
+**Reverted as a result:** the greying-out of Keep Awake while lid-closed mode is on, which had
+been justified entirely by that mismeasurement. Both switches are independent again, the status
+line names both protections, and all six combinations get a distinct line.
 
-Acted on as well: since Keep Awake demonstrably adds nothing while lid-closed mode is on, it is
-now greyed out there and relabelled "Keep Awake — covered by Lid Closed Mode", and a running
-`caffeinate` child is stopped. Greying alone would have recreated a familiar bug — a checked
-item the user cannot uncheck — so the two changes only make sense together.
+**Recorded in AGENTS.md:** use the lock-screen test, never an idle test; and if the idle path
+must be probed, sample `UserIsActive` and `InternalPreventDisplaySleep` too, not just
+`PreventUserIdleDisplaySleep`.
 
----
+The user found this by noticing that locking the screen behaved differently from leaving apps in
+front — a difference no amount of reading `pmset` output would have surfaced.
 
 ## Known remaining items
 
