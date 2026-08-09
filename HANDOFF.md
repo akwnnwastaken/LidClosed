@@ -1,8 +1,8 @@
 # HANDOFF
 
 Snapshot of where the work stands, so a fresh session can pick up without re-deriving
-context. **Updated 2026-08-09, at commit `56e5a5a`.** If the log has moved well past that,
-treat this as history and trust the code.
+context. **Updated 2026-08-09, on top of commit `8ecba91`.** If the log has moved well past
+that, treat this as history and trust the code.
 
 Read [AGENTS.md](AGENTS.md) first — it holds the safety rules and the design invariants. This
 file is only "what just happened, and what is next".
@@ -22,6 +22,7 @@ queued.**
 | Remaining-work round (single instance, caffeinate, quoting) | 3 closed |
 | Keep Awake verification | passed |
 | Display question (three attempts) | settled by the lock-screen test |
+| README audit against the code | 5 corrections, no code changes |
 
 Narrative of every change: [WALKTHROUGH.md](WALKTHROUGH.md). Everything still open, all of it
 by choice: [TODO.md](TODO.md).
@@ -33,6 +34,10 @@ Two remain deferred — the debug-only `get-task-allow` entitlement and hard-cod
 numbers.
 
 ```
+8ecba91  Correct the README against the code
+8d6d78e  Restore the complementary display behaviour, settled by the lock screen
+5479a2c  Reconcile the deferred-item count in HANDOFF
+0473858  Bring the handoff docs in line with the finished state
 56e5a5a  Grey out Keep Awake while Lid Closed Mode is on
 8aa9f8e  Revert the display-sleep claim: measured, pmset disablesleep covers it too
 47fdb11  Add scripts/state.sh for inspecting live state
@@ -45,7 +50,7 @@ c5f6724  Report both protections in the status line
 
 Read the display-related commits as a sequence, not individually: `453eca3` claimed the two
 mechanisms are complementary, `8aa9f8e` and `56e5a5a` reversed that on the strength of a
-mismeasured idle test, and the latest commit restores it after the lock-screen test settled the
+mismeasured idle test, and `8d6d78e` restores it after the lock-screen test settled the
 question. **`453eca3`'s conclusion is the correct one.** WALKTHROUGH.md §8 has the full account.
 
 ## Verification status
@@ -69,8 +74,8 @@ question. **`453eca3`'s conclusion is the correct one.** WALKTHROUGH.md §8 has 
   `MainActor.assumeIsolated` back-deploys to macOS 13; `SleepDisabled` persists in
   `/Library/Preferences/com.apple.PowerManagement.plist` across reboots; an ad-hoc signature is
   **forgeable** without a certificate; an orphaned `caffeinate` child is **not** reaped when its
-  parent dies, which is why `-w <pid>` is mandatory; and `pmset disablesleep` suppresses
-  **display** sleep as well.
+  parent dies, which is why `-w <pid>` is mandatory; and `pmset disablesleep` does **not** hold
+  the **display** on — established with the lock screen, after an idle test said otherwise.
 
 ## First thing to do in a new session
 

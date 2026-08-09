@@ -72,8 +72,9 @@ installing by hand with `cp -R` instead of the script.
 
 Keep Awake was manually verified on 2026-08-09: the `caffeinate` child appears bound to the
 app's pid, disappears when switched off, and — the point of the exercise — exits by itself
-after `pkill -9` on the app. A timed idle test in the same session also disproved the claim
-that lid-closed mode leaves the display sleeping; see WALKTHROUGH.md §8.
+after `pkill -9` on the app. A timed idle test in the same session appeared to show that
+lid-closed mode holds the display on too; that measurement was confounded, and the lock screen
+later established the opposite. See WALKTHROUGH.md §8 before trusting any idle test here.
 
 Closed on 2026-08-09, kept here briefly because each one carries a correction worth
 remembering.

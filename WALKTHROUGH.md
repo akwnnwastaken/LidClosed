@@ -46,9 +46,9 @@ privileged command failed.
   `kIOPMAssertPreventUserIdleSystemSleep`, which `pmset disablesleep 1` already covers, and it
   did nothing for lid-close sleep — so it was redundant, and requiring both to agree was the
   direct cause of the worst bug (sleep left disabled with no recovery marker and no way to
-  switch it off from the UI). The `caffeinate` option added in §7 also asserts display sleep,
-  but a timed idle test later showed `pmset disablesleep` suppresses display sleep as well, so
-  that option is a convenience rather than extra coverage — see §8.
+  switch it off from the UI). The `caffeinate` option added in §7 does assert display sleep,
+  which `pmset disablesleep` does **not** cover — so it adds real coverage rather than
+  duplicating this one. A timed idle test briefly suggested the opposite; see §8.
 - **Ownership separated from system state.** `isSleepDisabledSystemWide` reads
   `/usr/bin/pmset -g`; `isOwnedByUs` checks for our state file. The app only ever turns off
   an override it created.
