@@ -50,7 +50,7 @@ Disabling lid-closed mode, or quitting from the menu, prompts for your password 
 
 Neither one covers the other, so running both is a real combination: **the Mac stays up with the lid closed *and* the screen stays on.** The difference is easiest to see by locking the screen — with only Lid Closed Mode on, the display turns off; with only Keep Awake on, it stays on.
 
-Keep Awake is the better choice whenever you do not need the lid closed, because it buys the same wakefulness without an admin password, without touching a persistent system setting, and without anything to clean up if the app dies.
+Keep Awake is the better choice whenever the lid can stay open: it needs no admin password, touches no persistent system setting, and leaves nothing to clean up if the app dies. Use Lid Closed Mode when the lid has to close — and turn on both if you also want the screen to stay on.
 
 ### Safety Features
 
@@ -84,6 +84,14 @@ swift build -c release
 
 The binary will be at `.build/release/LidClosed`.
 
+### Tests
+
+```bash
+swift test
+```
+
+The suite covers the `pmset` output parser, the activate/deactivate/recovery state machine, privileged-command quoting, the `caffeinate` keeper and the single-instance lock. It runs entirely against injected test doubles: no test performs a privileged operation, spawns `caffeinate`, or touches the real state file in `~/Library/Application Support/LidClosed`.
+
 ## Usage
 
 **Lid closed:**
@@ -113,6 +121,10 @@ The binary will be at `.build/release/LidClosed`.
 
 The status line names both protections, because neither implies the other. The icon reflects Lid Closed Mode when it is on, since that is the one that survives closing the lid.
 
+The menu bar draws template SF Symbols — `lock.laptopcomputer`, `cup.and.saucer` and `lock.open.laptopcomputer` — so they follow your light/dark menu bar. The emoji above are approximations.
+
+If sleep was disabled by something other than LidClosed — a manual `pmset` command or another app — the toggle reads **⚠ Managed Outside LidClosed…** and clicking it explains how to hand control over instead of changing the setting. LidClosed only ever turns off an override it created.
+
 ## Requirements
 
 - macOS 13.0 (Ventura) or later
@@ -126,6 +138,8 @@ The status line names both protections, because neither implies the other. The i
 
 **Always click "Disable Lid Closed Mode" before uninstalling the app.** (Keep Awake needs no such care — it leaves nothing behind.)
 
+To check what is currently set, run `./scripts/state.sh` from the repository.
+
 If you forgot, or if the app crashes and you don't want to launch it again, open Terminal and run:
 
 ```bash
@@ -136,6 +150,23 @@ To fully uninstall:
 1. Ensure sleep is re-enabled (see above).
 2. `sudo rm -rf /Applications/LidClosed.app`
 3. `rm -rf ~/Library/Application Support/LidClosed`
+
+## Development
+
+Contributor notes live next to the code:
+
+- [AGENTS.md](AGENTS.md) — safety rules, architecture map, design invariants, and traps found the hard way. Worth reading before touching `Sources/PowerManager.swift` or `scripts/install.sh`.
+- [TODO.md](TODO.md) — what is deliberately not done, and why.
+- [WALKTHROUGH.md](WALKTHROUGH.md) — how the current design was arrived at, including measurements that overturned earlier assumptions.
+- [HANDOFF.md](HANDOFF.md) — snapshot of the current state.
+
+To see what the app is doing at any moment:
+
+```bash
+./scripts/state.sh
+```
+
+It is read-only, and reports the running instance, both switches, the state file and the display timer.
 
 ## License
 
