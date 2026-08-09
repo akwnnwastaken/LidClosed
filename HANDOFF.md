@@ -25,6 +25,7 @@ deliberate deferrals are now closed too. **One functional gap is left, by choice
 | Display question (three attempts) | settled by the lock-screen test |
 | README audit against the code | 5 corrections, no code changes |
 | Deferred-items round (boot daemon, dist/, versioning, entitlement) | 4 closed |
+| Boot cleanup, real install and restart | verified, all three paths |
 
 Narrative of every change: [WALKTHROUGH.md](WALKTHROUGH.md) — the most recent round is §9.
 Everything still open, all of it by choice: [TODO.md](TODO.md).
@@ -87,9 +88,8 @@ sleep first, while the helper still exists.
   itself after `pkill -9` on the app.
 - Single-instance lock verified with two real instances: the second logs
   `Another instance is already running` and exits without triggering recovery.
-- Helper verified without root, as far as that goes: the usage path, and `cleanup` while the app
-  was running — it exited 0, left `SleepDisabled 1` untouched, and logged
-  `cleanup: LidClosed is running, leaving the override alone`.
+- Helper and boot daemon verified on real hardware, through an actual restart — see the section
+  below for the log evidence and the exact procedure.
 - Established by measurement, because none of it could be assumed: AppleScript really returns
   **-128** on cancellation; hardened runtime does **not** break `do shell script`;
   `MainActor.assumeIsolated` back-deploys to macOS 13; `SleepDisabled` persists in
@@ -98,15 +98,36 @@ sleep first, while the helper still exists.
   parent dies, which is why `-w <pid>` is mandatory; and `pmset disablesleep` does **not** hold
   the **display** on — established with the lock screen, after an idle test said otherwise.
 
-### Not yet verified on real hardware
+### Boot cleanup, verified on real hardware (2026-08-09)
 
-The boot cleanup has **not** been observed doing its job at an actual boot. Doing so needs a
-privileged install and a restart:
+Installed with `./scripts/install.sh`, switched Lid Closed Mode on, confirmed
+`boot marker: present`, then restarted **without** switching it off. All three code paths
+appeared in one run:
+
+```
+22:04:45  logger[63323]  cleanup: LidClosed is running, leaving the override alone
+22:16:34  logger[63941]  cleanup: LidClosed is running, leaving the override alone
+22:21:46  logger[593]    boot cleanup: restored system sleep left disabled by a previous session
+```
+
+- The first is a manual `cleanup` with the app live — the liveness guard.
+- **The second is `launchctl bootstrap` during the install**, with lid-closed mode switched on.
+  The guard is what stopped that from restoring sleep under a running app that still believed
+  it owned the override. The hazard was real, not theoretical.
+- The third is the boot run. `pid 593` is the giveaway: launched by launchd early in boot,
+  before login. Afterwards `./scripts/state.sh` read `lid closed: off` and
+  `boot marker: none`.
+
+The self-heal on the app side was confirmed in the same run. `state.json` lives in the user's
+home and the daemon cannot touch it, so it survived the reboot; macOS relaunched the app at
+login as pid 1564, `recoverStaleState()` found sleep already enabled, and it cleared the stale
+marker **without prompting** — which is the designed behaviour, not a missed prompt.
+
+To repeat the test:
 
 ```bash
-./scripts/install.sh                     # installs helper + daemon, needs sudo
-# switch Lid Closed Mode on, then reboot without switching it off
-./scripts/state.sh                       # expect: lid closed off, boot marker none
+./scripts/state.sh   # confirm "boot marker: present" BEFORE restarting
+                     # if it reads none, the pmset fallback was used and the test proves nothing
 /usr/bin/log show --last 30m --style compact --predicate 'process == "logger"' | grep -i cleanup
 ```
 

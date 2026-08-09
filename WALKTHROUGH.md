@@ -261,9 +261,24 @@ under a running app that still believed it owned the override. Fixed in the help
 the installer: `cleanup` returns early if `pgrep -x LidClosed` finds anything. At real boot
 that check is free, since nothing can have survived.
 
-Verified without root by running `cleanup` while the app was live: it exited 0, left
-`SleepDisabled 1` untouched, and logged `cleanup: LidClosed is running, leaving the override
-alone`.
+Verified on real hardware, through an install and an actual restart. One run exercised all
+three paths:
+
+```
+22:04:45  logger[63323]  cleanup: LidClosed is running, leaving the override alone
+22:16:34  logger[63941]  cleanup: LidClosed is running, leaving the override alone
+22:21:46  logger[593]    boot cleanup: restored system sleep left disabled by a previous session
+```
+
+The middle line is the interesting one: that is `launchctl bootstrap` firing during the
+install, with lid-closed mode switched on at the time. The guard is the only reason it did not
+restore sleep under a running app. `pid 593` on the third line is the boot run — launched by
+launchd before login.
+
+The app-side self-heal was confirmed in the same run. The daemon cannot remove `state.json`,
+which lives in the user's home, so it survived the reboot; the app relaunched at login,
+`recoverStaleState()` found sleep already enabled, and cleared the stale marker without
+prompting.
 
 **`scripts/uninstall.sh` became mandatory.** Installing a LaunchDaemon that the documented
 uninstall steps do not remove would be a defect in itself. Order is the whole point: sleep is
