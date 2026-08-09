@@ -12,6 +12,12 @@ Nearly all of the complexity in this repo belongs to the first mechanism, becaus
 a persistent system setting and therefore needs ownership tracking and crash recovery. The
 second has none of that by design.
 
+Lid Closed Mode reaches `pmset` through a **root-owned helper script** installed outside the
+bundle, and a **LaunchDaemon** runs that helper once at every boot to undo an override a
+previous session never restored. The app falls back to calling `pmset` directly when the
+helper is absent, so a hand-built copy still works — with cleanup at restart being what it
+loses.
+
 ---
 
 ## ⚠️ Read this before running anything
@@ -25,7 +31,8 @@ never sleeps.
 script:**
 
 ```bash
-./scripts/state.sh    # app, lid-closed mode, keep awake, state file, display timer
+./scripts/state.sh    # app, both switches, state file, display timer,
+                      # installed build, helper, boot daemon, boot marker
 ```
 
 It distinguishes an override owned by LidClosed from one set outside it, and ignores
@@ -36,13 +43,22 @@ The raw equivalents, if you need them individually:
 /usr/bin/pmset -g | grep -i SleepDisabled                       # 0 = normal, 1 = disabled
 cat "$HOME/Library/Application Support/LidClosed/state.json"     # our ownership marker
 pgrep -x LidClosed                                               # is an instance running
+ls -l /var/db/com.akwnnwastaken.LidClosed.active                 # the boot daemon's marker
 ```
+
+There are now **two** ownership markers, and they answer different questions.
+`state.json` lives in the user's home and is what the app reads. The `/var/db` marker is
+root-owned and is what the boot daemon reads, because at boot no user home is guaranteed to
+be available. The helper writes and clears them in the same privileged call that flips
+`pmset`, so they normally agree; when they disagree the system self-heals, since a boot
+cleanup on an already-sleeping system is a no-op that just clears the marker.
 
 **Escape hatch, if sleep is stuck off:**
 
 ```bash
 sudo pmset disablesleep 0
 rm -f "$HOME/Library/Application Support/LidClosed/state.json"
+sudo rm -f /var/db/com.akwnnwastaken.LidClosed.active
 ```
 
 Never delete `state.json` while `SleepDisabled` is `1` and no instance is running — that
@@ -54,13 +70,19 @@ marker is the only thing that lets the next launch recover.
 
 ```bash
 swift build -c debug          # or -c release
-swift test                    # 47 tests, no privileged calls, no real state file touched
-./scripts/install.sh          # build + bundle + ad-hoc sign + install to /Applications
+swift test                    # 53 tests, no privileged calls, no real state file touched
+./scripts/install.sh          # build + bundle + sign + install app, helper and daemon
+./scripts/uninstall.sh        # removes all of it, restoring sleep first
 ./scripts/state.sh            # read-only: what the app is actually doing right now
 ```
 
-`install.sh` requires `sudo` for the `/Applications` step and **skips installation entirely
-when stdin is not a TTY**, so piping it does nothing. Run it from a real terminal.
+`install.sh` and `uninstall.sh` require `sudo` and **do nothing when stdin is not a TTY**, so
+piping either one is a no-op. Run them from a real terminal.
+
+`install.sh` runs `launchctl bootstrap` on the daemon, which executes the cleanup immediately.
+That is safe because the helper's `cleanup` refuses to act while a LidClosed process is alive
+— otherwise re-installing while lid-closed mode was on would restore sleep out from under the
+user, with the app still believing it owned the override.
 
 ---
 
@@ -78,6 +100,17 @@ when stdin is not a TTY**, so piping it does nothing. Run it from a real termina
 | `Sources/PrivilegedCommandRunner.swift` | Seam: the `with administrator privileges` path |
 | `Sources/BackgroundProcessLauncher.swift` | Seam: long-lived child processes |
 | `Sources/UserNotifier.swift` | Seam: modal alerts |
+| `scripts/lidclosed-helper.sh` | Root-owned helper: `enable` / `disable` / `cleanup` |
+| `Resources/com.akwnnwastaken.LidClosed.cleanup.plist` | The boot-time LaunchDaemon |
+| `scripts/uninstall.sh` | Removes app, helper, daemon, markers — sleep restored first |
+
+Installed layout for the two out-of-bundle pieces:
+
+| Path | Owner / mode |
+|------|--------------|
+| `/Library/PrivilegedHelperTools/com.akwnnwastaken.LidClosed.helper` | `root:wheel` 755 |
+| `/Library/LaunchDaemons/com.akwnnwastaken.LidClosed.cleanup.plist` | `root:wheel` 644 |
+| `/var/db/com.akwnnwastaken.LidClosed.active` | `root:wheel` 600, written by the helper |
 
 The seams exist so the state machine is testable without triggering a real authentication
 dialog, spawning a real child process, or opening a modal window. Anything new that touches
@@ -128,6 +161,21 @@ Each of these was a real bug once. See [WALKTHROUGH.md](WALKTHROUGH.md) for the 
 11. **Only one instance may run.** `InstanceLock` is acquired before `PowerManager.start()`.
     Without it, a second instance reads the first one's live state file, concludes the
     override is stale, and tries to undo it.
+12. **The helper's root ownership is a security boundary, not hygiene.** The app runs the
+    helper through `with administrator privileges`, so a copy the logged-in user could modify
+    would hand root to any process running as that user — the same escalation that
+    root-owning the bundle closed. It lives directly under `/Library` (`root:wheel`, not
+    group-writable) and deliberately **not** under `/Library/Application Support`, which is
+    `root:admin`. Never relax the mode, and never move it somewhere user-writable.
+13. **The direct-`pmset` fallback must stay.** `overrideCommand(enable:)` uses the helper only
+    when it exists and is executable, and otherwise calls `pmset` exactly as the app did
+    before the daemon existed. Removing the fallback breaks every hand-built copy and every
+    install predating the helper. `helperPath` is injectable for the same reason
+    `stateFileURL` is: without it, assertions about the privileged command would depend on
+    whether the machine running the suite happens to have the helper installed.
+14. **Boot cleanup never acts while an instance is alive.** The helper's `cleanup` checks
+    `pgrep -x LidClosed` before touching anything. At boot that check is free; it exists for
+    `launchctl bootstrap` during a re-install.
 
 ---
 
@@ -136,10 +184,28 @@ Each of these was a real bug once. See [WALKTHROUGH.md](WALKTHROUGH.md) for the 
 - **`open dist/LidClosed.app` is unreliable for testing.** Launch Services resolves by
   bundle ID and may activate the copy in `/Applications` instead. Always launch the exact
   binary by full path when you care which build runs.
-- **`NSLog` output is not retrievable with `log show`.** Multiple predicates
-  (`process ==`, `processImagePath CONTAINS`, `eventMessage CONTAINS`, with `--info
-  --debug`) all return nothing. To see logs, run the binary directly in a terminal:
-  `/Applications/LidClosed.app/Contents/MacOS/LidClosed`.
+- **`log` is a zsh builtin. Always write `/usr/bin/log`.** Plain `log show …` fails with
+  `too many arguments`, and with `2>/dev/null` it silently prints nothing at all — which
+  looks exactly like "there are no matching log entries". This wasted time twice, once here
+  and once when it made an earlier trap note overstate its case.
+- **`NSLog` output is not retrievable with `log show`; `logger` output is.** Re-checked with
+  `/usr/bin/log` to rule out the builtin above: a `[LidClosed]` line from a binary run in a
+  terminal reaches stderr and never appears in the unified log, under either
+  `process == "LidClosed"` or a free-text search. To read the app's own logs, run the binary
+  directly:
+
+  ```bash
+  /Applications/LidClosed.app/Contents/MacOS/LidClosed
+  ```
+
+  This is exactly why the helper uses `logger` instead of writing to stdout — the boot
+  cleanup has no terminal, so a message that only reached stderr would be lost:
+
+  ```bash
+  /usr/bin/log show --last 1h --style compact --predicate 'process == "logger"' | grep -i cleanup
+  ```
+- **There is no `timeout(1)` on macOS.** Use a background process plus `kill`, or install
+  coreutils for `gtimeout`.
 - **A second instance is now refused by `InstanceLock`**, and logs
   `Another instance is already running`. If you are wondering why a freshly built binary
   exits immediately, check whether the installed app is running.
@@ -177,8 +243,8 @@ Each of these was a real bug once. See [WALKTHROUGH.md](WALKTHROUGH.md) for the 
 - **The IDE's SourceKit diagnostics go stale** after adding files or changing signatures.
   Trust `swift build`, not the inline squiggles.
 - **IOKit power assertions do not prevent lid-close sleep.** They were removed for this
-  reason. Do not reintroduce them as a way to avoid the password prompt; see TODO §2.1 for
-  the `caffeinate` option, which is the legitimate lid-open use case.
+  reason. Do not reintroduce them as a way to avoid the password prompt — `AwakeKeeper`'s
+  `caffeinate` option is the legitimate lid-open use case.
 
 ---
 

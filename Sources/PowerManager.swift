@@ -23,12 +23,17 @@ final class PowerManager {
     private let privilegedRunner: PrivilegedCommandRunner
     private let notifier: UserNotifier
     private let stateFileURL: URL
+    private let helperPath: String?
 
     /// Keeps DispatchSource references alive.
     private var signalSources: [any DispatchSourceSignal] = []
     private var didStart = false
 
     private static let pmsetPath = "/usr/bin/pmset"
+
+    /// The root-owned helper installed by `scripts/install.sh`, if present.
+    nonisolated static let defaultHelperPath =
+        "/Library/PrivilegedHelperTools/com.akwnnwastaken.LidClosed.helper"
 
     // MARK: - Initialization
 
@@ -56,11 +61,30 @@ final class PowerManager {
     init(runner: CommandRunner = DefaultCommandRunner(),
          privilegedRunner: PrivilegedCommandRunner = AppleScriptPrivilegedRunner(),
          notifier: UserNotifier = AlertNotifier(),
-         stateFileURL: URL = PowerManager.defaultStateFileURL()) {
+         stateFileURL: URL = PowerManager.defaultStateFileURL(),
+         helperPath: String? = PowerManager.defaultHelperPath) {
         self.runner = runner
         self.privilegedRunner = privilegedRunner
         self.notifier = notifier
         self.stateFileURL = stateFileURL
+        self.helperPath = helperPath
+    }
+
+    /// The privileged command that flips the override.
+    ///
+    /// Prefers the root-owned helper, because the helper writes the system-wide marker
+    /// that the boot-time LaunchDaemon reads — that marker is what makes a restart clean
+    /// up after itself instead of leaving `SleepDisabled 1` set.
+    ///
+    /// Falls back to calling `pmset` directly when the helper is absent: a hand-built
+    /// bundle, a `cp -R` install, or an install predating the helper. That path behaves
+    /// exactly as it did before the daemon existed — the override is recovered on the next
+    /// launch rather than at boot — so an older install degrades instead of breaking.
+    private func overrideCommand(enable: Bool) -> (path: String, arguments: [String]) {
+        if let helperPath, FileManager.default.isExecutableFile(atPath: helperPath) {
+            return (helperPath, [enable ? "enable" : "disable"])
+        }
+        return (Self.pmsetPath, ["disablesleep", enable ? "1" : "0"])
     }
 
     /// Performs launch-time work: legacy migration, stale-state recovery and signal
@@ -153,7 +177,8 @@ final class PowerManager {
             return false
         }
 
-        switch privilegedRunner.run(executablePath: Self.pmsetPath, arguments: ["disablesleep", "1"]) {
+        let command = overrideCommand(enable: true)
+        switch privilegedRunner.run(executablePath: command.path, arguments: command.arguments) {
         case .success:
             NSLog("[LidClosed] Sleep override enabled")
             if !writeStateFile() {
@@ -198,7 +223,8 @@ final class PowerManager {
     func deactivate(isQuitting: Bool = false) -> Bool {
         guard isOwnedByUs else { return true }
 
-        switch privilegedRunner.run(executablePath: Self.pmsetPath, arguments: ["disablesleep", "0"]) {
+        let command = overrideCommand(enable: false)
+        switch privilegedRunner.run(executablePath: command.path, arguments: command.arguments) {
         case .success:
             removeStateFile()
             NSLog("[LidClosed] Sleep override removed")
@@ -221,6 +247,11 @@ final class PowerManager {
     ///
     /// Without root this call fails, and that is expected: the state file is kept on
     /// failure so the next launch prompts and recovers.
+    ///
+    /// Deliberately calls `pmset` rather than the helper. The helper's extra job is
+    /// clearing the root-owned marker, which needs root just as much as `pmset` does, so
+    /// routing through it would buy nothing here. When this fails at shutdown the
+    /// boot-time LaunchDaemon is what cleans up, using that very marker.
     func attemptSilentRestore() {
         guard isOwnedByUs else { return }
 
@@ -300,7 +331,8 @@ final class PowerManager {
         }
 
         NSLog("[LidClosed] Stale override detected — re-enabling system sleep")
-        switch privilegedRunner.run(executablePath: Self.pmsetPath, arguments: ["disablesleep", "0"]) {
+        let command = overrideCommand(enable: false)
+        switch privilegedRunner.run(executablePath: command.path, arguments: command.arguments) {
         case .success:
             removeStateFile()
             NSLog("[LidClosed] Recovery complete")

@@ -25,12 +25,8 @@ and inherit root the next time the user typed their admin password.
 > experimentally. Signing catches accidental corruption; **root ownership** is what stops
 > an attacker.
 
-Two gaps remain by design:
-
-- The unsigned-ownership copy left in `dist/` is fully launchable and is owned by the
-  user. Running that copy reopens the escalation path.
-- Installing by hand with `cp -R` instead of the script produces a user-owned bundle.
-  The script prints a warning about both cases.
+The `dist/` copy was a third exposure and is now closed — see §9. Installing by hand with
+`cp -R` still produces a user-owned bundle, and the script warns about that.
 
 Proper mitigation beyond this would mean a privileged helper installed via
 `SMAppService` with a code requirement check. That is deliberately out of scope.
@@ -88,13 +84,13 @@ privileged command failed.
 
 > [!IMPORTANT]
 > `attemptSilentRestore()` cannot succeed without root, so it will normally fail. That is
-> expected and honest: at logout there is nobody to type a password. The consequence is
-> that a logout or restart while Active leaves `SleepDisabled 1` in place until LidClosed
-> is launched again. `SleepDisabled` is persisted to
-> `/Library/Preferences/com.apple.PowerManagement.plist`, so it **survives reboots**.
+> expected and honest: at logout there is nobody to type a password. `SleepDisabled` is
+> persisted to `/Library/Preferences/com.apple.PowerManagement.plist`, so it **survives
+> reboots** and the failure used to be permanent until the next launch.
 
-Making logout cleanup actually work would require a LaunchDaemon. Not done; the first-run
-warning and the README cover the exposure instead.
+That is what the boot daemon in §9 addresses: the app still cannot clean up on the way out,
+so cleanup happens on the way back in instead. Logging out while the Mac stays on is the one
+case left, because nothing reboots and the daemon never gets its turn.
 
 ## 4. Concurrency
 
@@ -225,15 +221,90 @@ must be probed, sample `UserIsActive` and `InternalPreventDisplaySleep` too, not
 The user found this by noticing that locking the screen behaved differently from leaving apps in
 front — a difference no amount of reading `pmset` output would have surfaced.
 
+---
+
+## 9. Closing the deferred items (2026-08-09)
+
+The four items parked in TODO.md were reviewed and closed. Three were small; one was not.
+
+### The boot cleanup daemon
+
+The gap: restoring sleep needs root, at logout nobody is there to type a password, and
+`SleepDisabled` persists to `/Library/Preferences/com.apple.PowerManagement.plist`. So a
+restart while lid-closed mode was on produced a Mac that would not sleep until LidClosed was
+launched again — the app's most serious remaining defect, and the only functional one.
+
+Three pieces:
+
+- `scripts/lidclosed-helper.sh`, installed to `/Library/PrivilegedHelperTools` as `root:wheel`
+  755. Takes `enable`, `disable` or `cleanup`.
+- `Resources/com.akwnnwastaken.LidClosed.cleanup.plist`, a `RunAtLoad` LaunchDaemon that runs
+  `cleanup` once at boot.
+- `PowerManager.overrideCommand(enable:)`, which routes the privileged call through the helper
+  when it is installed and falls back to `pmset` when it is not.
+
+**Why the app's own `state.json` could not be reused.** The daemon runs at boot, before login,
+where no user home directory is guaranteed to be available. So the helper writes a second
+marker at `/var/db/com.akwnnwastaken.LidClosed.active`, as root, in the same call that runs
+`pmset`. Coupling the two in one privileged operation is also what keeps them consistent: the
+marker cannot claim an override that was not applied, because `set -e` aborts before the write.
+
+**Why a one-shot and not a persistent service.** `RunAtLoad` with no `KeepAlive` covers every
+route by which the Mac goes down — restart, shutdown, kernel panic, power loss, a flat battery
+— because the setting is still there on the way back up. A persistent root process able to
+change power settings is a standing risk; a process that runs once at boot and exits is not.
+The trade is the logout-while-still-on case, recorded in TODO.md §1.1.
+
+**A hazard found while wiring the installer.** `launchctl bootstrap` runs `RunAtLoad`
+immediately, so re-installing while lid-closed mode was switched on would have restored sleep
+under a running app that still believed it owned the override. Fixed in the helper rather than
+the installer: `cleanup` returns early if `pgrep -x LidClosed` finds anything. At real boot
+that check is free, since nothing can have survived.
+
+Verified without root by running `cleanup` while the app was live: it exited 0, left
+`SleepDisabled 1` untouched, and logged `cleanup: LidClosed is running, leaving the override
+alone`.
+
+**`scripts/uninstall.sh` became mandatory.** Installing a LaunchDaemon that the documented
+uninstall steps do not remove would be a defect in itself. Order is the whole point: sleep is
+restored *first*, while the helper still exists, and only an override carrying our marker is
+touched. Doing it the other way round leaves a Mac that never sleeps and nothing installed to
+fix it.
+
+### The three small ones
+
+- **`dist/` is deleted after a successful install.** The copy left there is user-owned and
+  fully launchable, which reopens the escalation path that root-owning `/Applications` closes.
+  The subtler bug was placement: the warning about it existed, but only in the branch where
+  the user *declined* installation. The path that actually created the exposure said nothing.
+- **Versions come from git.** `CFBundleVersion` is the commit count,
+  `CFBundleShortVersionString` the latest tag when there is one, plus a `LidClosedGitCommit`
+  key. Only the copy inside the bundle is stamped, so building never dirties the tree. This
+  came out of a real incident: identifying the installed build meant comparing file timestamps
+  against the log, and it was misread twice.
+- **The debug entitlement is now asserted against.** Re-verified that release builds carry no
+  entitlements while debug builds carry `com.apple.security.get-task-allow`. Since `install.sh`
+  packages only `.build/release` this was unreachable, so the fix is a check that refuses to
+  continue if it ever becomes reachable.
+
+Test count went from 47 to 53: helper routing for enable and disable, and the three fallbacks
+(no path configured, path missing, path present but not executable). `helperPath` is injectable
+for the same reason `stateFileURL` is — otherwise the assertions would pass or fail depending
+on whether the machine running them had the helper installed.
+
+**A measurement correction.** AGENTS.md recorded that `log show` could not retrieve the app's
+output, based on predicates that "all return nothing". Part of that was an artefact: `log` is a
+**zsh builtin**, so `log show …` fails with `too many arguments`, and under `2>/dev/null` it
+prints nothing — indistinguishable from no matching entries. Re-checked with `/usr/bin/log`:
+the conclusion holds for `NSLog`, which reaches stderr only, but `logger` output *is*
+retrievable. That is why the helper uses `logger` — the boot cleanup has no terminal, so
+anything that only reached stderr would be lost.
+
 ## Known remaining items
 
 Everything below is deliberate; see [TODO.md](TODO.md) for the reasoning.
 
-- Debug builds carry SwiftPM's default `com.apple.security.get-task-allow` entitlement. Release
-  builds do not.
-- `CFBundleShortVersionString` / `CFBundleVersion` are hard-coded in `Resources/Info.plist` and
-  not bumped by the install script.
-- Logout and restart still leave lid-closed mode's override in place until the next launch;
-  fixing that needs a LaunchDaemon. This is the only remaining functional gap. Keep Awake is
+- Logging out while the Mac stays on still leaves the override in place until someone logs in.
+  Bounded, visible in `./scripts/state.sh`, and the only functional gap left. Keep Awake is
   unaffected, because `caffeinate -w` releases itself.
-- No privileged helper and no notarization.
+- No `SMAppService` privileged helper and no notarization.

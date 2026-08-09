@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+      Restores system sleep at boot if a previous session left it disabled.
+
+      Deliberately a one-shot: RunAtLoad with no KeepAlive, so it runs the check once at
+      boot and exits. There is no persistent root process, and nothing polls. Every case
+      where the Mac goes down is covered by that single run — restart, shutdown, kernel
+      panic, power loss, a flat battery — because `SleepDisabled` is persisted to
+      /Library/Preferences/com.apple.PowerManagement.plist and is therefore still set on
+      the way back up.
+
+      Not covered: logging out while the Mac stays on. Catching that needs either a
+      persistent root service the app can talk to, or a timer that wakes as root
+      forever. See TODO.md 2.1.
+    -->
+    <key>Label</key>
+    <string>com.akwnnwastaken.LidClosed.cleanup</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Library/PrivilegedHelperTools/com.akwnnwastaken.LidClosed.helper</string>
+        <string>cleanup</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+</dict>
+</plist>

@@ -68,10 +68,15 @@ final class LidClosedTests: XCTestCase {
 
     /// Builds a manager wired entirely to test doubles. `start()` is never called, so no
     /// signal handlers are installed and no recovery runs.
+    ///
+    /// `helperPath` defaults to nil rather than the production path on purpose: with the
+    /// real default, every assertion about the privileged command would depend on whether
+    /// the machine running the suite happens to have the helper installed.
     private func makeManager(
         pmsetOutput: String = sleepEnabledOutput,
         pmsetStatus: Int32 = 0,
-        privileged: PrivilegedOutcome = .success
+        privileged: PrivilegedOutcome = .success,
+        helperPath: String? = nil
     ) -> (PowerManager, MockCommandRunner, MockPrivilegedRunner, MockNotifier) {
         let runner = MockCommandRunner(status: pmsetStatus, output: pmsetOutput)
         let privilegedRunner = MockPrivilegedRunner(outcome: privileged)
@@ -80,9 +85,22 @@ final class LidClosedTests: XCTestCase {
             runner: runner,
             privilegedRunner: privilegedRunner,
             notifier: notifier,
-            stateFileURL: stateURL
+            stateFileURL: stateURL,
+            helperPath: helperPath
         )
         return (manager, runner, privilegedRunner, notifier)
+    }
+
+    /// Creates a stand-in for the installed helper. Never executed — `PowerManager` only
+    /// decides whether to *address* it, and the privileged runner is a mock.
+    private func makeFakeHelper(executable: Bool = true) throws -> String {
+        let url = tempDir.appendingPathComponent("com.akwnnwastaken.LidClosed.helper")
+        try "#!/bin/sh\nexit 0\n".write(to: url, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: executable ? 0o755 : 0o644],
+            ofItemAtPath: url.path
+        )
+        return url.path
     }
 
     nonisolated private static let sleepDisabledOutput = """
@@ -224,6 +242,67 @@ final class LidClosedTests: XCTestCase {
 
         XCTAssertTrue(pm.deactivate())
         XCTAssertTrue(privileged.invocations.isEmpty, "must not touch an override we do not own")
+    }
+
+    // MARK: - Helper routing
+    //
+    // Which privileged command gets run decides whether a restart cleans up after itself:
+    // only the helper writes the root-owned marker the boot daemon reads. Calling pmset
+    // directly still disables sleep, so a mistake here is invisible until a reboot leaves
+    // the Mac unable to sleep — which is exactly the failure the daemon exists to prevent.
+
+    func testActivateUsesHelperWhenInstalled() throws {
+        let helper = try makeFakeHelper()
+        let (pm, _, privileged, _) = makeManager(helperPath: helper)
+
+        XCTAssertTrue(pm.activate())
+        XCTAssertEqual(privileged.invocations, ["\(helper) enable"])
+    }
+
+    func testDeactivateUsesHelperWhenInstalled() throws {
+        let helper = try makeFakeHelper()
+        let (pm, _, privileged, _) = makeManager(helperPath: helper)
+
+        XCTAssertTrue(pm.activate())
+        XCTAssertTrue(pm.deactivate())
+        XCTAssertEqual(privileged.invocations, ["\(helper) enable", "\(helper) disable"])
+    }
+
+    func testFallsBackToPmsetWhenHelperPathIsNil() {
+        let (pm, _, privileged, _) = makeManager(helperPath: nil)
+
+        XCTAssertTrue(pm.activate())
+        XCTAssertEqual(privileged.invocations, ["/usr/bin/pmset disablesleep 1"])
+    }
+
+    func testFallsBackToPmsetWhenHelperIsMissing() {
+        let missing = tempDir.appendingPathComponent("not-installed").path
+        let (pm, _, privileged, _) = makeManager(helperPath: missing)
+
+        XCTAssertTrue(pm.activate())
+        XCTAssertEqual(privileged.invocations, ["/usr/bin/pmset disablesleep 1"])
+    }
+
+    /// A helper present but not executable means a broken or partial install. Addressing it
+    /// would fail the privileged call and leave the user unable to switch the mode on at
+    /// all, so the direct `pmset` path is the right answer.
+    func testFallsBackToPmsetWhenHelperIsNotExecutable() throws {
+        let helper = try makeFakeHelper(executable: false)
+        let (pm, _, privileged, _) = makeManager(helperPath: helper)
+
+        XCTAssertTrue(pm.activate())
+        XCTAssertEqual(privileged.invocations, ["/usr/bin/pmset disablesleep 1"])
+    }
+
+    /// The unprivileged restore stays on `pmset` even with the helper installed: the
+    /// helper's extra job is clearing a root-owned marker, which needs root just as much.
+    func testSilentRestoreStaysOnPmsetWithHelperInstalled() throws {
+        let helper = try makeFakeHelper()
+        let (pm, runner, _, _) = makeManager(helperPath: helper)
+
+        XCTAssertTrue(pm.activate())
+        pm.attemptSilentRestore()
+        XCTAssertEqual(runner.invocations.last, "/usr/bin/pmset disablesleep 0")
     }
 
     // MARK: - Silent restore
