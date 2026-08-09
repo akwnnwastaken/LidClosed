@@ -2,6 +2,19 @@
 
 Working notes for AI agents (and humans) contributing to LidClosed.
 
+**Reading order for a new session:**
+
+1. **This file** — safety rules, architecture, design invariants, traps. Start here.
+2. [HANDOFF.md](HANDOFF.md) — what just happened, what is verified, what is next, and the
+   decisions not to re-litigate.
+3. [TODO.md](TODO.md) — what is open. Everything there is deliberate, not forgotten; §1.1
+   carries a full analysis of the one remaining functional gap.
+4. [WALKTHROUGH.md](WALKTHROUGH.md) — how the design was reached, including measurements that
+   overturned earlier assumptions. Read the relevant section before reopening a settled
+   question; two of them were settled the wrong way first.
+
+Then run `./scripts/state.sh` before changing anything — see the warning below.
+
 LidClosed is a macOS menu bar utility (`LSUIElement`) offering two independent ways to stop
 the Mac sleeping: **Lid Closed Mode**, which runs `pmset disablesleep 1` through an
 administrator authentication prompt and covers clamshell operation, and **Keep Awake**, which
@@ -258,3 +271,7 @@ Each of these was a real bug once. See [WALKTHROUGH.md](WALKTHROUGH.md) for the 
 - Prefer adding a test over manual verification. The manual test matrix in
   [HANDOFF.md](HANDOFF.md) exists only for what genuinely cannot be automated: the real
   authentication dialog.
+- **When you finish a round of work, update HANDOFF.md's commit pointer and log excerpt, and
+  the test count here if it moved.** That pointer has gone stale twice. It matters more than it
+  looks: HANDOFF tells the reader to distrust itself once the log has moved on, so a stale
+  pointer discredits content that is in fact current.

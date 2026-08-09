@@ -1,8 +1,11 @@
 # HANDOFF
 
 Snapshot of where the work stands, so a fresh session can pick up without re-deriving
-context. **Updated 2026-08-09, on top of commit `fae9171`.** If the log has moved well past
-that, treat this as history and trust the code.
+context. **The newest commit described here is `fca48d9` (2026-08-09).**
+
+If the log has moved past that, only the round-by-round narrative below is behind — the design
+invariants in [AGENTS.md](AGENTS.md) and the open items in [TODO.md](TODO.md) are maintained
+separately and still apply. Check `git log --oneline` first either way.
 
 Read [AGENTS.md](AGENTS.md) first — it holds the safety rules and the design invariants. This
 file is only "what just happened, and what is next".
@@ -31,6 +34,9 @@ Narrative of every change: [WALKTHROUGH.md](WALKTHROUGH.md) — the most recent 
 Everything still open, all of it by choice: [TODO.md](TODO.md).
 
 ```
+fca48d9  Record the logout-gap analysis before deferring it
+1aaa18a  Record the boot cleanup verified on real hardware
+a87e17c  Close the deferred items: boot cleanup daemon, installer hardening
 fae9171  Purge the last traces of the reverted display claim
 8ecba91  Correct the README against the code
 8d6d78e  Restore the complementary display behaviour, settled by the lock screen
