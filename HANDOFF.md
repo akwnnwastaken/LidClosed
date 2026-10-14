@@ -1,7 +1,7 @@
 # HANDOFF
 
 Snapshot of where the work stands, so a fresh session can pick up without re-deriving
-context. **The newest commit described here is `fca48d9` (2026-08-09).**
+context. **The newest commit described here is `da087e5` (2026-10-14), released as `v1.1.0`.**
 
 If the log has moved past that, only the round-by-round narrative below is behind — the design
 invariants in [AGENTS.md](AGENTS.md) and the open items in [TODO.md](TODO.md) are maintained
@@ -35,6 +35,8 @@ Narrative of every change: [WALKTHROUGH.md](WALKTHROUGH.md) — the most recent 
 Everything still open, all of it by choice: [TODO.md](TODO.md).
 
 ```
+da087e5  Add a battery guard for Lid Closed Mode
+4f1fa49  Make the handoff self-orienting for a fresh session  (v1.0.0)
 fca48d9  Record the logout-gap analysis before deferring it
 1aaa18a  Record the boot cleanup verified on real hardware
 a87e17c  Close the deferred items: boot cleanup daemon, installer hardening
