@@ -32,6 +32,20 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         refreshState()
         buildMenu()
         updateUI()
+
+        // The battery guard can restore sleep while lid-closed mode is on, and the Mac then
+        // sleeps. Without this the icon would still claim lid-closed mode after waking,
+        // until the menu happened to be opened.
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.refreshState()
+                self?.updateUI()
+            }
+        }
     }
 
     /// Re-reads the real system state and reconciles our ownership marker against it.

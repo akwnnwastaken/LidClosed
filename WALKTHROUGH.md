@@ -315,6 +315,60 @@ the conclusion holds for `NSLog`, which reaches stderr only, but `logger` output
 retrievable. That is why the helper uses `logger` — the boot cleanup has no terminal, so
 anything that only reached stderr would be lost.
 
+## 10. The battery guard (2026-10-14)
+
+Prompted by a quality checklist with two questions. The first — is the sleep block reliably
+removed on Quit, on a crash, and when switched off, and is there cleanup in `willTerminate`
+that never runs because it is wrapped in an asynchronous `Task` — checked out clean. There is
+no `Task` anywhere in `Sources/`; `applicationWillTerminate` is synchronous. Its
+`attemptSilentRestore()` normally fails without root, which is documented and intended: Quit
+has already offered the authenticated restore, and the boot daemon covers what is left.
+
+The second found a real gap. Nothing stopped Lid Closed Mode on battery: no threshold, no
+charger-only option, no timer. A closed Mac on battery is usually in a bag, where it runs flat
+and can run hot.
+
+**Why it lives in a daemon.** The app cannot give sleep back by itself. That needs root, and
+with the lid shut nobody can answer the password prompt — the same constraint as the logout
+gap in TODO.md §1.1. So the check has to run as something that already holds root.
+
+Three pieces:
+
+- A `battery-guard` subcommand in the helper: if the marker is present and the Mac is on
+  battery at or below `LOW_BATTERY_PERCENT` (20), run `pmset disablesleep 0` and clear the
+  marker.
+- `Resources/com.akwnnwastaken.LidClosed.batteryguard.plist`, a second LaunchDaemon with
+  `StartInterval` 60. It is separate from the cleanup daemon on purpose. Adding a timer to
+  `cleanup` would be TODO.md §1.1's option B, which was rejected because it would restore
+  sleep a few minutes after a crash.
+- `enable` refuses in the same condition, with a message that reaches the app's "Could Not
+  Disable Sleep" alert. Allowing the mode and then undoing it within a minute would be the
+  worse experience.
+
+**Why this is not the persistent root service that was rejected before.** Each run is a
+one-shot that reads the marker and `pmset -g batt`, then exits. It takes no input from any
+caller, so there is no IPC surface and no code-signing question. What it does add is a root
+wake every minute, indefinitely — accepted as the price of the safety property.
+
+**Unlike `cleanup`, it acts while the app is running.** That is the whole point. The app
+finds out by reading `pmset`: `syncStateWithSystem` drops `state.json` when it sees sleep
+re-enabled. `StatusBarController` now also refreshes on `NSWorkspace.didWakeNotification`.
+Without that, after the guard fires and the Mac sleeps, the icon would still claim lid-closed
+mode until the menu was opened.
+
+**Unparseable means not low.** A desktop, AC power, or output the parser does not recognise
+leaves things as they are. The guard must never restore sleep on the strength of a guess.
+
+**Testability without weakening the helper.** The decision is one `battery_low` function,
+exposed read-only as `battery-low`, which parses stdin. `BatteryGuardTests` pipes captured
+`pmset -g batt` output through the real script. Environment overrides for the `pmset` path or
+the marker were rejected: the helper runs as root. Test count went from 53 to 60.
+
+**Not yet verified on hardware.** Exercised: the threshold logic through the real script, the
+guard run unprivileged against live `pmset -g batt` output (a no-op at 80%), and the syntax of
+every script. Not exercised: the daemon firing after a real install, and an actual discharge
+below 20%. Like the boot cleanup, that needs a real install and a real battery.
+
 ## Known remaining items
 
 Everything below is deliberate; see [TODO.md](TODO.md) for the reasoning.

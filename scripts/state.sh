@@ -12,6 +12,7 @@ STATE_FILE="$HOME/Library/Application Support/LidClosed/state.json"
 INSTALLED_PLIST="/Applications/LidClosed.app/Contents/Info.plist"
 HELPER="/Library/PrivilegedHelperTools/com.akwnnwastaken.LidClosed.helper"
 DAEMON_LABEL="com.akwnnwastaken.LidClosed.cleanup"
+GUARD_LABEL="com.akwnnwastaken.LidClosed.batteryguard"
 MARKER="/var/db/com.akwnnwastaken.LidClosed.active"
 
 printf '%-14s ' "app:"
@@ -76,14 +77,23 @@ else
     echo "missing — app falls back to calling pmset directly, no cleanup at restart"
 fi
 
-printf '%-14s ' "boot daemon:"
-if /bin/launchctl print "system/$DAEMON_LABEL" > /dev/null 2>&1; then
-    echo "loaded ($DAEMON_LABEL)"
-elif [ -f "/Library/LaunchDaemons/$DAEMON_LABEL.plist" ]; then
-    echo "plist present but not loaded"
-else
-    echo "not installed"
-fi
+for ENTRY in "boot daemon:|$DAEMON_LABEL" "battery guard:|$GUARD_LABEL"; do
+    NAME=${ENTRY%%|*}
+    LABEL=${ENTRY#*|}
+    printf '%-14s ' "$NAME"
+    if /bin/launchctl print "system/$LABEL" > /dev/null 2>&1; then
+        echo "loaded ($LABEL)"
+    elif [ -f "/Library/LaunchDaemons/$LABEL.plist" ]; then
+        echo "plist present but not loaded"
+    else
+        echo "not installed"
+    fi
+done
+
+printf '%-14s ' "battery:"
+/usr/bin/pmset -g batt | awk 'NR == 1 { sub(/^Now drawing from /, ""); src = $0 }
+    match($0, /[0-9]+%;/) { pct = substr($0, RSTART, RLENGTH - 1) }
+    END { print (pct == "" ? "none" : pct) " — " src " (guard acts on battery at 20% or below)" }'
 
 # Root-owned, mode 600: existence is visible to anyone, contents are not.
 printf '%-14s ' "boot marker:"

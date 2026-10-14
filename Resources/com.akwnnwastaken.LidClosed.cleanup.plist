@@ -14,7 +14,7 @@
 
       Not covered: logging out while the Mac stays on. Catching that needs either a
       persistent root service the app can talk to, or a timer that wakes as root
-      forever. See TODO.md 2.1.
+      forever. See TODO.md 1.1.
     -->
     <key>Label</key>
     <string>com.akwnnwastaken.LidClosed.cleanup</string>

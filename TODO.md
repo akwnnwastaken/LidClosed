@@ -1,6 +1,6 @@
 # TODO
 
-Open items. Last reviewed 2026-08-09.
+Open items. Last reviewed 2026-10-14.
 
 What has been fixed and why is in [WALKTHROUGH.md](WALKTHROUGH.md). Working conventions and
 the design invariants are in [AGENTS.md](AGENTS.md).
@@ -138,6 +138,13 @@ Developer ID — a purchasing decision, not a code one.
 
 Closed on 2026-08-09. Kept briefly because most of them carry a correction worth remembering.
 
+- **Battery guard** (2026-10-14). Lid Closed Mode on battery had no protection: no
+  threshold, no charger-only option, no timer. The helper's `battery-guard` subcommand, run every
+  minute by `com.akwnnwastaken.LidClosed.batteryguard`, gives sleep back on battery at 20% or
+  below, and `enable` refuses in that state. It is a separate daemon from `cleanup` rather than
+  a timer added to it — that would be §1.1's rejected option B. **Still to verify on
+  hardware:** the daemon firing after a real install, and an actual discharge below 20%. See
+  WALKTHROUGH.md §10.
 - **Cleanup at restart and shutdown.** `scripts/lidclosed-helper.sh` plus the LaunchDaemon
   `com.akwnnwastaken.LidClosed.cleanup`, which runs the helper once at boot. The design note
   that matters: the marker the daemon reads lives in `/var/db` and is written **by root, in

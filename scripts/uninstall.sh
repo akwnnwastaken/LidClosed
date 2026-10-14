@@ -20,6 +20,8 @@ INSTALLED_APP="/Applications/${BUNDLE_NAME}"
 DAEMON_LABEL="com.akwnnwastaken.LidClosed.cleanup"
 HELPER_PATH="/Library/PrivilegedHelperTools/com.akwnnwastaken.LidClosed.helper"
 DAEMON_PLIST="/Library/LaunchDaemons/${DAEMON_LABEL}.plist"
+GUARD_LABEL="com.akwnnwastaken.LidClosed.batteryguard"
+GUARD_PLIST="/Library/LaunchDaemons/${GUARD_LABEL}.plist"
 MARKER="/var/db/com.akwnnwastaken.LidClosed.active"
 USER_STATE="${HOME}/Library/Application Support/LidClosed"
 
@@ -29,6 +31,7 @@ echo "This removes:"
 echo "   ${INSTALLED_APP}"
 echo "   ${HELPER_PATH}"
 echo "   ${DAEMON_PLIST}  (and unloads the daemon)"
+echo "   ${GUARD_PLIST}  (and unloads the daemon)"
 echo "   ${MARKER}"
 echo "   ${USER_STATE}"
 echo ""
@@ -73,13 +76,16 @@ if /usr/bin/pmset -g | grep -qE 'SleepDisabled[ \t]+1'; then
     fi
 fi
 
-# 3. Unload and remove the daemon before the helper it points at.
-if [ -e "${DAEMON_PLIST}" ]; then
-    echo "  Unloading ${DAEMON_LABEL}..."
-    sudo launchctl bootout "system/${DAEMON_LABEL}" 2>/dev/null || true
-    sudo rm -f "${DAEMON_PLIST}"
-    echo "  ✅ Daemon removed"
-fi
+# 3. Unload and remove the daemons before the helper they point at.
+for LABEL in "${DAEMON_LABEL}" "${GUARD_LABEL}"; do
+    PLIST="/Library/LaunchDaemons/${LABEL}.plist"
+    if [ -e "${PLIST}" ]; then
+        echo "  Unloading ${LABEL}..."
+        sudo launchctl bootout "system/${LABEL}" 2>/dev/null || true
+        sudo rm -f "${PLIST}"
+        echo "  ✅ Daemon removed"
+    fi
+done
 
 sudo rm -f "${HELPER_PATH}" "${MARKER}"
 echo "  ✅ Helper and marker removed"

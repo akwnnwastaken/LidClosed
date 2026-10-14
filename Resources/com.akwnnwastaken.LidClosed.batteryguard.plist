@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+      Gives sleep back when a Mac in Lid Closed Mode is running on battery at 20% or below.
+
+      A lid-closed Mac on battery is usually in a bag, where it would otherwise run flat and
+      can run hot. The app cannot handle this itself: restoring sleep needs root, and with
+      the lid shut nobody can answer a password prompt.
+
+      A one-shot fired every minute by StartInterval, not a persistent process: each run
+      reads the marker and `pmset -g batt`, and exits. It accepts no input from anyone, so
+      it adds no IPC surface. It does nothing unless LidClosed's marker is present, and
+      unlike the boot cleanup it acts while the app is running, on purpose.
+
+      The threshold lives in the helper, as LOW_BATTERY_PERCENT.
+    -->
+    <key>Label</key>
+    <string>com.akwnnwastaken.LidClosed.batteryguard</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Library/PrivilegedHelperTools/com.akwnnwastaken.LidClosed.helper</string>
+        <string>battery-guard</string>
+    </array>
+
+    <key>StartInterval</key>
+    <integer>60</integer>
+</dict>
+</plist>

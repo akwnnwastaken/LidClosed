@@ -45,6 +45,7 @@ Reach for this one when you do not actually need clamshell operation: it needs *
 | Admin password | required | not needed |
 | Changes a system setting | yes, and it persists across reboots | no |
 | If the app crashes | recovered at next boot, or next launch | released automatically |
+| On battery at 20% or below | sleep is given back (battery guard) | not guarded — the lid is open |
 
 Disabling lid-closed mode, or quitting from the menu, prompts for your password again and restores normal sleep behavior. Keep Awake just stops.
 
@@ -57,6 +58,7 @@ Keep Awake is the better choice whenever the lid can stay open: it needs no admi
 - **State Tracking** — The app writes a state file to `~/Library/Application Support/LidClosed` when it activates the override, and only ever disables an override it knows it owns. If sleep was already disabled by something else, LidClosed leaves it alone.
 - **Crash Recovery** — If the app crashes or is force-killed, the next launch detects the stale state file and offers to re-enable sleep. If a restore fails or you cancel the prompt, the state file is kept so recovery can be retried.
 - **Cleanup at Boot** — `scripts/install.sh` also installs a small root-owned helper and a LaunchDaemon that runs once at every boot. If a previous session left sleep disabled, the daemon restores it before you log in. This covers every way the Mac can go down — restart, shutdown, kernel panic, power loss, a flat battery — and is what stops the setting from outliving the session that asked for it. It only ever undoes an override LidClosed marked as its own, and does nothing while LidClosed is running.
+- **Battery Guard** — A closed Mac running on battery is usually in a bag, where it would run flat and can run hot. A second LaunchDaemon checks once a minute and, if Lid Closed Mode is on while the Mac is on battery at **20% or below**, gives sleep back so the Mac can sleep normally. Turning the mode on is refused outright in that state, with a message telling you to plug in. This runs as root because, with the lid shut, nobody is there to answer a password prompt; it reads only the battery level and LidClosed's own marker, and accepts no input. It is part of the full install — a hand-built copy without the helper does not have it.
 - **Single Instance** — Only one copy runs at a time. A second instance would see the first one's state file, mistake the live override for a leftover, and try to undo it.
 - **Security** — The installation script installs the bundle with root ownership (`root:wheel`), so a process running as your user cannot swap the executable and inherit the root privileges the app requests. The bundle is also ad-hoc signed, which makes accidental corruption detectable — note that ad-hoc signatures are not a defence against a determined local attacker, since anyone can re-sign without a certificate.
 
@@ -77,12 +79,13 @@ cd LidClosed
 
 This builds the app, creates a signed `.app` bundle with an icon, and securely installs it to `/Applications` (requires `sudo`). After installation, you can find it with **Spotlight** (Cmd+Space → "LidClosed").
 
-It also installs two small pieces outside the app, both owned by `root`:
+It also installs three small pieces outside the app, all owned by `root`:
 
 | Path | What it is |
 |---|---|
 | `/Library/PrivilegedHelperTools/com.akwnnwastaken.LidClosed.helper` | Runs `pmset` and records whether LidClosed owns the override |
 | `/Library/LaunchDaemons/com.akwnnwastaken.LidClosed.cleanup.plist` | Runs the helper once at boot to restore sleep if a session left it disabled |
+| `/Library/LaunchDaemons/com.akwnnwastaken.LidClosed.batteryguard.plist` | Runs the helper every minute to give sleep back on battery at 20% or below |
 
 The build copy in `dist/` is deleted once the hardened copy is in place — it is owned by your user and launching it would reopen the escalation path that root ownership closes. Remove everything later with `./scripts/uninstall.sh`.
 
@@ -102,7 +105,7 @@ The binary will be at `.build/release/LidClosed`.
 swift test
 ```
 
-The suite covers the `pmset` output parser, the activate/deactivate/recovery state machine, privileged-command quoting, the `caffeinate` keeper and the single-instance lock. It runs entirely against injected test doubles: no test performs a privileged operation, spawns `caffeinate`, or touches the real state file in `~/Library/Application Support/LidClosed`.
+The suite covers the `pmset` output parser, the activate/deactivate/recovery state machine, privileged-command quoting, the battery guard's threshold decision (run through the real helper script), the `caffeinate` keeper and the single-instance lock. It runs entirely against injected test doubles: no test performs a privileged operation, spawns `caffeinate`, or touches the real state file in `~/Library/Application Support/LidClosed`.
 
 ## Usage
 
@@ -164,7 +167,7 @@ To fully uninstall:
 ./scripts/uninstall.sh
 ```
 
-It restores sleep first — while the helper is still installed — and only then removes the app, the helper, the boot daemon and the per-user state. Doing it by hand in the other order leaves a Mac that never sleeps and nothing installed to fix it.
+It restores sleep first — while the helper is still installed — and only then removes the app, the helper, both daemons and the per-user state. Doing it by hand in the other order leaves a Mac that never sleeps and nothing installed to fix it.
 
 If sleep is disabled but LidClosed's marker is absent, the script says so and leaves the setting alone: something else disabled it, and it is not LidClosed's to undo.
 
@@ -173,7 +176,9 @@ Removing things by hand instead:
 ```bash
 sudo pmset disablesleep 0
 sudo launchctl bootout system/com.akwnnwastaken.LidClosed.cleanup
+sudo launchctl bootout system/com.akwnnwastaken.LidClosed.batteryguard
 sudo rm -f /Library/LaunchDaemons/com.akwnnwastaken.LidClosed.cleanup.plist
+sudo rm -f /Library/LaunchDaemons/com.akwnnwastaken.LidClosed.batteryguard.plist
 sudo rm -f /Library/PrivilegedHelperTools/com.akwnnwastaken.LidClosed.helper
 sudo rm -f /var/db/com.akwnnwastaken.LidClosed.active
 sudo rm -rf /Applications/LidClosed.app
@@ -195,7 +200,7 @@ To see what the app is doing at any moment:
 ./scripts/state.sh
 ```
 
-It is read-only, and reports the running instance, both switches, the state file, the display timer, which build is installed (version, build number and commit, stamped by `install.sh` from git), and whether the helper, boot daemon and boot marker are in place.
+It is read-only, and reports the running instance, both switches, the state file, the display timer, which build is installed (version, build number and commit, stamped by `install.sh` from git), whether the helper, both daemons and the boot marker are in place, and the current battery level.
 
 `./scripts/uninstall.sh` removes everything, in an order that cannot strand a disabled-sleep setting.
 

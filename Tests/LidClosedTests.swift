@@ -474,6 +474,76 @@ final class PrivilegedQuotingTests: XCTestCase {
     }
 }
 
+// MARK: - Battery guard
+
+/// Exercises the helper's `battery-low` subcommand, which is the single place the low-battery
+/// decision is made — both the minute-by-minute guard and the refusal in `enable` go through
+/// it. It only parses stdin, so the real script can be run here without root.
+final class BatteryGuardTests: XCTestCase {
+
+    private static let helperURL = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("scripts/lidclosed-helper.sh")
+
+    /// Captured from a real `pmset -g batt`, with the percentage and source substituted.
+    private func batt(_ source: String, _ percent: Int) -> String {
+        """
+        Now drawing from '\(source)'
+         -InternalBattery-0 (id=22937699)\t\(percent)%; discharging; 1:10 remaining present: true
+
+        """
+    }
+
+    private func isLow(_ input: String) throws -> Bool {
+        let process = Process()
+        let stdin = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = [Self.helperURL.path, "battery-low"]
+        process.standardInput = stdin
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        stdin.fileHandleForWriting.write(Data(input.utf8))
+        try stdin.fileHandleForWriting.close()
+        process.waitUntilExit()
+        return process.terminationStatus == 0
+    }
+
+    func testHealthyBatteryIsNotLow() throws {
+        XCTAssertFalse(try isLow(batt("Battery Power", 81)))
+    }
+
+    func testThresholdItselfCountsAsLow() throws {
+        XCTAssertTrue(try isLow(batt("Battery Power", 20)))
+    }
+
+    func testJustAboveThresholdIsNotLow() throws {
+        XCTAssertFalse(try isLow(batt("Battery Power", 21)))
+    }
+
+    func testSingleDigitPercentageIsLow() throws {
+        XCTAssertTrue(try isLow(batt("Battery Power", 5)))
+    }
+
+    /// Plugged in, the battery level is irrelevant: the Mac cannot run flat.
+    func testLowChargeOnACPowerIsNotLow() throws {
+        XCTAssertFalse(try isLow(batt("AC Power", 5)))
+    }
+
+    /// A desktop reports AC power and has no battery line at all.
+    func testDesktopWithoutBatteryIsNotLow() throws {
+        XCTAssertFalse(try isLow("Now drawing from 'AC Power'\n"))
+    }
+
+    /// Output that cannot be parsed must leave things as they are, not restore sleep under a
+    /// user on the strength of a guess.
+    func testUnparseableOutputIsNotLow() throws {
+        XCTAssertFalse(try isLow(""))
+        XCTAssertFalse(try isLow("Now drawing from 'Battery Power'\n -InternalBattery-0 garbage\n"))
+    }
+}
+
 // MARK: - Keep-awake option
 
 final class MockBackgroundProcess: BackgroundProcess, @unchecked Sendable {

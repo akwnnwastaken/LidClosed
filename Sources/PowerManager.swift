@@ -134,7 +134,8 @@ final class PowerManager {
     }
 
     /// Drops our ownership marker if the system no longer has sleep disabled — for
-    /// example after the user ran `sudo pmset disablesleep 0` in Terminal.
+    /// example after the user ran `sudo pmset disablesleep 0` in Terminal, or the helper's
+    /// battery guard restored sleep at low charge.
     ///
     /// - Returns: the system state that was just read, so callers can reuse it instead of
     ///   spawning a second `pmset`.
@@ -143,7 +144,7 @@ final class PowerManager {
         let isDisabled = isSleepDisabledSystemWide
 
         if isOwnedByUs && !isDisabled {
-            NSLog("[LidClosed] Sleep was re-enabled outside LidClosed — clearing our state file")
+            NSLog("[LidClosed] Sleep was re-enabled outside the app (manual pmset, or the battery guard) — clearing our state file")
             removeStateFile()
         }
 

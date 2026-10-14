@@ -27,9 +27,11 @@ second has none of that by design.
 
 Lid Closed Mode reaches `pmset` through a **root-owned helper script** installed outside the
 bundle, and a **LaunchDaemon** runs that helper once at every boot to undo an override a
-previous session never restored. The app falls back to calling `pmset` directly when the
-helper is absent, so a hand-built copy still works — with cleanup at restart being what it
-loses.
+previous session never restored. A second LaunchDaemon runs it every minute as a **battery
+guard**, giving sleep back when lid-closed mode is on and the Mac is on battery at 20% or
+below. The app falls back to calling `pmset` directly when the
+helper is absent, so a hand-built copy still works — with cleanup at restart and the battery
+guard being what it loses.
 
 ---
 
@@ -45,7 +47,8 @@ script:**
 
 ```bash
 ./scripts/state.sh    # app, both switches, state file, display timer,
-                      # installed build, helper, boot daemon, boot marker
+                      # installed build, helper, both daemons, battery level,
+                      # boot marker
 ```
 
 It distinguishes an override owned by LidClosed from one set outside it, and ignores
@@ -83,7 +86,7 @@ marker is the only thing that lets the next launch recover.
 
 ```bash
 swift build -c debug          # or -c release
-swift test                    # 53 tests, no privileged calls, no real state file touched
+swift test                    # 60 tests, no privileged calls, no real state file touched
 ./scripts/install.sh          # build + bundle + sign + install app, helper and daemon
 ./scripts/uninstall.sh        # removes all of it, restoring sleep first
 ./scripts/state.sh            # read-only: what the app is actually doing right now
@@ -113,16 +116,18 @@ user, with the app still believing it owned the override.
 | `Sources/PrivilegedCommandRunner.swift` | Seam: the `with administrator privileges` path |
 | `Sources/BackgroundProcessLauncher.swift` | Seam: long-lived child processes |
 | `Sources/UserNotifier.swift` | Seam: modal alerts |
-| `scripts/lidclosed-helper.sh` | Root-owned helper: `enable` / `disable` / `cleanup` |
+| `scripts/lidclosed-helper.sh` | Root-owned helper: `enable` / `disable` / `cleanup` / `battery-guard` |
 | `Resources/com.akwnnwastaken.LidClosed.cleanup.plist` | The boot-time LaunchDaemon |
+| `Resources/com.akwnnwastaken.LidClosed.batteryguard.plist` | The every-minute low-battery LaunchDaemon |
 | `scripts/uninstall.sh` | Removes app, helper, daemon, markers — sleep restored first |
 
-Installed layout for the two out-of-bundle pieces:
+Installed layout for the out-of-bundle pieces:
 
 | Path | Owner / mode |
 |------|--------------|
 | `/Library/PrivilegedHelperTools/com.akwnnwastaken.LidClosed.helper` | `root:wheel` 755 |
 | `/Library/LaunchDaemons/com.akwnnwastaken.LidClosed.cleanup.plist` | `root:wheel` 644 |
+| `/Library/LaunchDaemons/com.akwnnwastaken.LidClosed.batteryguard.plist` | `root:wheel` 644 |
 | `/var/db/com.akwnnwastaken.LidClosed.active` | `root:wheel` 600, written by the helper |
 
 The seams exist so the state machine is testable without triggering a real authentication
@@ -189,6 +194,14 @@ Each of these was a real bug once. See [WALKTHROUGH.md](WALKTHROUGH.md) for the 
 14. **Boot cleanup never acts while an instance is alive.** The helper's `cleanup` checks
     `pgrep -x LidClosed` before touching anything. At boot that check is free; it exists for
     `launchctl bootstrap` during a re-install.
+15. **The battery guard acts while an instance is alive, and the threshold lives only in the
+    helper.** It is the opposite of invariant 14 on purpose: a live lid-closed session on a
+    flat-running battery is the case it exists for. The app learns about it by reading
+    `pmset` (`syncStateWithSystem`, also run on wake), not by being told. `LOW_BATTERY_PERCENT`
+    in `lidclosed-helper.sh` drives both the guard and the refusal in `enable`, through one
+    `battery_low` function; the `battery-low` subcommand exposes that decision, read-only, so
+    `BatteryGuardTests` can run the real script without root. Do not add environment overrides
+    to the helper to make it testable — it runs as root.
 
 ---
 

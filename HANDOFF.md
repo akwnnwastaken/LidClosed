@@ -29,8 +29,9 @@ deliberate deferrals are now closed too. **One functional gap is left, by choice
 | README audit against the code | 5 corrections, no code changes |
 | Deferred-items round (boot daemon, dist/, versioning, entitlement) | 4 closed |
 | Boot cleanup, real install and restart | verified, all three paths |
+| Quality checklist (exit cleanup, battery safety) | exit cleanup clean; battery guard added |
 
-Narrative of every change: [WALKTHROUGH.md](WALKTHROUGH.md) — the most recent round is §9.
+Narrative of every change: [WALKTHROUGH.md](WALKTHROUGH.md) — the most recent round is §10.
 Everything still open, all of it by choice: [TODO.md](TODO.md).
 
 ```
@@ -57,6 +58,24 @@ question. **`453eca3`'s conclusion is the correct one.** WALKTHROUGH.md §8 has 
 
 ## What changed most recently
 
+**Battery guard (2026-10-14).** A second LaunchDaemon,
+`com.akwnnwastaken.LidClosed.batteryguard`, runs the helper's new `battery-guard` subcommand
+every minute. If LidClosed's marker is present and the Mac is on battery at 20% or below, it
+gives sleep back. The helper's `enable` refuses in that state. On the app side the only changes
+are a refresh on wake, so the icon does not lie after the guard fires, and a log line. Two
+things that are easy to get wrong:
+
+- **It acts while the app is running** — the reverse of `cleanup`'s liveness guard, and on
+  purpose (AGENTS.md invariant 15).
+- **It is a separate daemon, not a `StartInterval` on the cleanup daemon.** A timer on
+  `cleanup` would be TODO.md §1.1's rejected option B.
+
+**Not yet verified on hardware** — see "Next up". The installed build on the developer's
+machine predates it, and `./scripts/state.sh` reports `battery guard: not installed` until the
+next `./scripts/install.sh`.
+
+The previous round, kept for context:
+
 Lid Closed Mode no longer calls `pmset` directly when the full installation is present. It goes
 through a **root-owned helper** (`/Library/PrivilegedHelperTools/…`), and a **LaunchDaemon**
 runs that helper once at every boot to undo an override a previous session never restored.
@@ -81,12 +100,13 @@ sleep first, while the helper still exists.
 ## Verification status
 
 - `swift build` debug and release: clean, zero warnings.
-- `swift test`: **53 tests** passing. Covers the `pmset -g` parser; the full transition table
+- `swift test`: **60 tests** passing. Covers the `pmset -g` parser; the full transition table
   (activate success/cancel/failure/external-override, deactivate
   success/cancel/failure/unowned, silent restore success/failure/unowned, external-change
   syncing, state file contents); helper routing and all three fallback cases; privileged-command
   quoting, including a round trip through a real `/bin/sh` with hostile arguments; the
-  `caffeinate` keeper; the single-instance lock; and every reachable status line.
+  `caffeinate` keeper; the single-instance lock; every reachable status line; and the battery
+  guard's threshold decision, run through the real helper script.
 - Manual scenarios against the real authentication dialog: enable with password, enable
   cancelled, disable with password, disable cancelled (×4), `kill -9` then relaunch recovery,
   external `pmset` change, and external override not being claimed.
@@ -155,6 +175,17 @@ place. AGENTS.md has the escape hatch if something is genuinely stuck.
 
 ## Next up
 
+**Verify the battery guard on hardware.** Run `./scripts/install.sh` from a real terminal, then
+`./scripts/state.sh` should read `battery guard: loaded`. With lid-closed mode on and unplugged,
+let the battery cross 20%, or switch the mode on below 20% to see the refusal. The guard logs
+through `logger`:
+
+```bash
+/usr/bin/log show --last 1h --style compact --predicate 'process == "logger"' | grep -i "battery guard"
+```
+
+Then, as before:
+
 One item, deliberately not started: **logout while the Mac stays on** still leaves the override
 in place, because nothing reboots and the daemon only runs at boot.
 
@@ -177,6 +208,10 @@ A fresh reviewer tends to flag these as bugs. They are choices, with reasons.
   larger standing risk than the residual it would remove.
 - **The helper writes a second marker instead of reusing `state.json`.** At boot there is no
   guaranteed user home to read. Not redundancy.
+- **The battery guard is a root one-shot every minute, and it acts while the app is running.**
+  Chosen over app-side checks because restoring sleep needs root and nobody can authenticate
+  with the lid shut. It takes no input, so it is not the persistent IPC service rejected
+  above. The 20% threshold is `LOW_BATTERY_PERCENT` in the helper and nowhere else.
 - **`cleanup` refuses to act while a LidClosed process is alive.** This is not defensive
   padding: `launchctl bootstrap` during a re-install runs it immediately, and without the guard
   it would restore sleep under a running app that still believed it owned the override.

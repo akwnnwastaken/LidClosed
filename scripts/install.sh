@@ -26,6 +26,8 @@ APP_PATH="${DIST_DIR}/${BUNDLE_NAME}"
 DAEMON_LABEL="com.akwnnwastaken.LidClosed.cleanup"
 HELPER_PATH="/Library/PrivilegedHelperTools/com.akwnnwastaken.LidClosed.helper"
 DAEMON_PLIST="/Library/LaunchDaemons/${DAEMON_LABEL}.plist"
+GUARD_LABEL="com.akwnnwastaken.LidClosed.batteryguard"
+GUARD_PLIST="/Library/LaunchDaemons/${GUARD_LABEL}.plist"
 
 echo "🔨 Building ${APP_NAME}..."
 swift build -c release
@@ -174,6 +176,14 @@ if [[ "${REPLY}" =~ ^[Yy]$ ]]; then
     sudo launchctl bootstrap system "${DAEMON_PLIST}"
     echo "  ✅ Daemon ${DAEMON_LABEL} loaded"
 
+    # Gives sleep back on battery at low charge, while lid-closed mode is on. It has to be
+    # root because nobody can answer a password prompt with the lid shut.
+    echo "  Installing battery guard daemon..."
+    sudo install -o root -g wheel -m 644 "Resources/${GUARD_LABEL}.plist" "${GUARD_PLIST}"
+    sudo launchctl bootout "system/${GUARD_LABEL}" 2>/dev/null || true
+    sudo launchctl bootstrap system "${GUARD_PLIST}"
+    echo "  ✅ Daemon ${GUARD_LABEL} loaded"
+
     # dist/ holds a user-owned, fully launchable copy of the same app. Leaving it behind
     # reopens exactly the escalation path that root-owning /Applications just closed, so
     # it goes now that the hardened copy is in place.
@@ -192,8 +202,8 @@ else
     echo "   Note: launching the copy in ${DIST_DIR}/ instead leaves the bundle writable"
     echo "   by your user account, which reopens the privilege-escalation path."
     echo ""
-    echo "   A manual copy also skips the privileged helper and the boot cleanup daemon."
+    echo "   A manual copy also skips the privileged helper and both daemons."
     echo "   The app still works: it calls pmset directly and recovers a leftover override"
-    echo "   on next launch, which is how it behaved before the daemon existed. What you"
-    echo "   lose is cleanup at restart or shutdown."
+    echo "   on next launch, which is how it behaved before the daemons existed. What you"
+    echo "   lose is cleanup at restart or shutdown, and the low-battery guard."
 fi
