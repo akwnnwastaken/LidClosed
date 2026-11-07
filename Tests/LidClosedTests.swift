@@ -17,7 +17,7 @@ final class MockCommandRunner: CommandRunner, @unchecked Sendable {
 
     func run(executableURL: URL, arguments: [String]) throws -> (status: Int32, output: String) {
         invocations.append(([executableURL.path] + arguments).joined(separator: " "))
-        if arguments == ["limits-version"], let limitsVersion { return (0, limitsVersion) }
+        if arguments == ["limits-version", "live-timer"], let limitsVersion { return (0, limitsVersion) }
         return (status, output)
     }
 }
@@ -399,6 +399,56 @@ final class LidClosedTests: XCTestCase {
         XCTAssertTrue(privileged.invocations.isEmpty)
     }
 
+    func testTimerUpdateRequiresAnOwnedSessionAndCompatibleHelper() throws {
+        let helper = try makeFakeHelper()
+        let (pm, runner, privileged, _) = makeManager(helperPath: helper)
+        runner.limitsVersion = "2\n"
+        let settings = SessionLimits(minutes: 60)
+        XCTAssertFalse(pm.updateTimer(settings))
+        XCTAssertTrue(privileged.invocations.isEmpty)
+        XCTAssertTrue(pm.activate())
+
+        runner.limitsVersion = "1\n"
+        XCTAssertFalse(pm.updateTimer(settings))
+        XCTAssertEqual(privileged.invocations, ["\(helper) enable"])
+
+        runner.limitsVersion = "2\n"
+        XCTAssertTrue(pm.updateTimer(settings))
+        XCTAssertTrue(pm.updateTimer(SessionLimits()))
+        XCTAssertEqual(privileged.invocations, [
+            "\(helper) enable", "\(helper) set-duration 60", "\(helper) set-duration 0"
+        ])
+        XCTAssertTrue(stateFileExists)
+    }
+
+    func testClockTimerIsSentAsAnAbsoluteDeadlineAndCancelKeepsIt() throws {
+        let helper = try makeFakeHelper()
+        let (pm, runner, privileged, _) = makeManager(helperPath: helper)
+        runner.limitsVersion = "1\n"
+        let settings = SessionLimits(heat: .serious, battery: 35, endMinuteOfDay: 18 * 60)
+        XCTAssertFalse(pm.activate(limits: settings))
+        XCTAssertTrue(privileged.invocations.isEmpty)
+
+        runner.limitsVersion = "2\n"
+        XCTAssertTrue(pm.activate(limits: settings))
+        let deadline = try XCTUnwrap(pm.activeDeadline)
+        XCTAssertEqual(privileged.invocations, [
+            "\(helper) enable-until \(Int(deadline.timeIntervalSince1970)) 35 2"
+        ])
+
+        privileged.outcome = .cancelled
+        XCTAssertFalse(pm.updateTimer(SessionLimits(minutes: 30)))
+        XCTAssertEqual(pm.activeDeadline, deadline)
+        XCTAssertTrue(stateFileExists)
+
+        privileged.outcome = .success
+        let update = SessionLimits(endMinuteOfDay: 20 * 60)
+        XCTAssertTrue(pm.updateTimer(update))
+        let updated = try XCTUnwrap(pm.activeDeadline)
+        XCTAssertEqual(privileged.invocations.last,
+                       "\(helper) set-deadline \(Int(updated.timeIntervalSince1970))")
+    }
+
     // MARK: - State file contents
 
     func testStateFileRecordsOwningProcess() throws {
@@ -709,6 +759,31 @@ final class AwakeKeeperTests: XCTestCase {
         XCTAssertEqual(launcher.lastProcess?.terminateCallCount, 1)
     }
 
+    func testChangingDurationStartsAFullNewCountdownOnTheSameChild() throws {
+        let launcher = MockProcessLauncher()
+        let keeper = AwakeKeeper(launcher: launcher, runner: MockCommandRunner())
+        XCTAssertTrue(keeper.start(limits: SessionLimits(minutes: 30, battery: 20)))
+        let oldDeadline = try XCTUnwrap(keeper.deadline)
+        let editTime = oldDeadline.addingTimeInterval(-10 * 60)
+        let settings = SessionLimits(minutes: 60)
+        XCTAssertFalse(keeper.updateTimer(settings, now: oldDeadline))
+        XCTAssertTrue(keeper.updateTimer(settings, now: editTime))
+        let newDeadline = editTime.addingTimeInterval(60 * 60)
+        XCTAssertEqual(keeper.deadline, newDeadline)
+        XCTAssertEqual(keeper.limits.battery, 20)
+        XCTAssertNil(keeper.enforceLimits(now: oldDeadline))
+
+        XCTAssertTrue(keeper.updateTimer(settings, now: oldDeadline))
+        XCTAssertEqual(keeper.deadline, newDeadline)
+        XCTAssertTrue(keeper.updateTimer(SessionLimits(), now: oldDeadline))
+        XCTAssertNil(keeper.deadline)
+        XCTAssertTrue(keeper.updateTimer(SessionLimits(minutes: 15), now: oldDeadline))
+        XCTAssertEqual(keeper.deadline, oldDeadline.addingTimeInterval(15 * 60))
+        XCTAssertNotNil(keeper.enforceLimits(now: oldDeadline.addingTimeInterval(15 * 60)))
+        XCTAssertEqual(launcher.invocations.count, 1)
+        XCTAssertEqual(launcher.lastProcess?.terminateCallCount, 1)
+    }
+
     func testThermalLimitRefusesHotStartAndStopsRunningSession() {
         let launcher = MockProcessLauncher()
         let notifier = MockNotifier()
@@ -734,6 +809,26 @@ final class AwakeKeeperTests: XCTestCase {
         runner.output = "Now drawing from 'Battery Power'\n -InternalBattery-0 25%; discharging"
         XCTAssertNotNil(keeper.enforceLimits())
         XCTAssertFalse(keeper.isActive)
+    }
+}
+
+final class ClockTimerTests: XCTestCase {
+    func testClockTimeUsesTodayOrTomorrowAsNeeded() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 7200)!
+        func date(_ day: Int, _ hour: Int, _ minute: Int) throws -> Date {
+            try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 11, day: day, hour: hour, minute: minute)))
+        }
+        let limits = SessionLimits(endMinuteOfDay: 18 * 60)
+        XCTAssertEqual(limits.deadline(from: try date(7, 17, 30), calendar: calendar), try date(7, 18, 0))
+        XCTAssertEqual(limits.deadline(from: try date(7, 18, 0), calendar: calendar), try date(8, 18, 0))
+        XCTAssertEqual(limits.deadline(from: try date(7, 23, 55), calendar: calendar), try date(8, 18, 0))
+    }
+
+    func testExistingSavedDurationStillDecodesWithoutClockSetting() throws {
+        let data = Data(#"{"minutes":30,"heat":0,"battery":20}"#.utf8)
+        XCTAssertEqual(try JSONDecoder().decode(SessionLimits.self, from: data),
+                       SessionLimits(minutes: 30, battery: 20))
     }
 }
 

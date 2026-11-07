@@ -44,6 +44,15 @@ uint() {
     [ "${#1}" -le 10 ] && [ "$1" -le "$2" ]
 }
 
+validate_future_deadline() {
+    # A local clock day can exceed 24 hours when the clocks go back.
+    uint "$1" "$(($2 + 93600))" || invalid
+    if [ "$1" -le "$2" ]; then
+        echo "The selected end time has passed. Choose a new time and try again." >&2
+        exit 1
+    fi
+}
+
 battery_low() {
     /usr/bin/awk -v limit="$1" -v source="Now drawing from 'Battery Power'" '
         NR == 1 && $0 == source { on_battery = 1 }
@@ -76,10 +85,30 @@ sleep_is_disabled() {
     printf '%s\n' "$1" | /usr/bin/awk '$1 == "SleepDisabled" && $2 == "1" { found = 1 } END { exit !found }'
 }
 
+read_session() {
+    [ -f "$MARKER" ] && read -r version deadline battery thermal extra < "$MARKER" &&
+        [ "$version" = v2 ] && [ -z "$extra" ] &&
+        uint "$deadline" 9999999999 && uint "$battery" 100 &&
+        [ "$battery" -gt 0 ] && uint "$thermal" 3
+}
+
+write_session() {
+    staged=$(/usr/bin/mktemp "${MARKER}.XXXXXX")
+    trap '/bin/rm -f "$staged"' EXIT
+    printf 'v2 %s %s %s\n' "$1" "$2" "$3" > "$staged"
+    /bin/mv -f "$staged" "$MARKER"
+}
+
+restore_sleep() {
+    "$PMSET" disablesleep 0
+    /bin/rm -f "$MARKER"
+}
+
 case "${1:-}" in
 limits-version)
     /bin/launchctl print "$GUARD" >/dev/null 2>&1 || exit 1
-    echo 1
+    # Older app builds expect exactly 1 from the argumentless probe.
+    if [ "${2:-}" = live-timer ]; then echo 2; else echo 1; fi
     exit 0
     ;;
 battery-low)
@@ -96,7 +125,7 @@ limits-check)
     limit_reason "$@"
     exit 0
     ;;
-enable|enable-limited|disable|cleanup|battery-guard)
+enable|enable-limited|enable-until|set-duration|set-deadline|disable|cleanup|battery-guard)
     [ "$(/usr/bin/id -u)" -eq 0 ] || exit 77
     if [ "$1" = "battery-guard" ] && [ ! -e "$MARKER" ]; then exit 0; fi
     # A guard run must not act on a marker from a session that was just replaced.
@@ -112,12 +141,16 @@ locked)
 esac
 
 case "${1:-}" in
-enable|enable-limited)
+enable|enable-limited|enable-until)
     minutes=0 battery=$LOW_BATTERY_PERCENT thermal=0
-    if [ "$1" = "enable-limited" ]; then
-        [ "$#" -eq 4 ] && uint "$2" 1440 && uint "$3" 100 &&
+    if [ "$1" != "enable" ]; then
+        [ "$#" -eq 4 ] && uint "$3" 100 &&
             [ "$3" -gt 0 ] && uint "$4" 3 || invalid
-        minutes=$2 battery=$3 thermal=$4
+        if [ "$1" = "enable-limited" ]; then
+            uint "$2" 1440 || invalid
+            minutes=$2
+        fi
+        battery=$3 thermal=$4
         if ! /bin/launchctl print "$GUARD" >/dev/null 2>&1; then
             echo "The LidClosed background guard is not loaded. Run the full installer." >&2
             exit 1
@@ -143,15 +176,15 @@ enable|enable-limited)
     fi
 
     deadline=0
-    if [ "$minutes" -gt 0 ]; then
+    if [ "$1" = "enable-until" ]; then
+        validate_future_deadline "$2" "$(/bin/date +%s)"
+        deadline=$2
+    elif [ "$minutes" -gt 0 ]; then
         now=$(/bin/date +%s)
         deadline=$((now + minutes * 60))
     fi
     # Persist recovery information first: an interruption must not strand pmset enabled.
-    staged=$(/usr/bin/mktemp "${MARKER}.XXXXXX")
-    trap '/bin/rm -f "$staged"' EXIT
-    printf 'v2 %s %s %s\n' "$deadline" "$battery" "$thermal" > "$staged"
-    /bin/mv -f "$staged" "$MARKER"
+    write_session "$deadline" "$battery" "$thermal"
     if ! "$PMSET" disablesleep 1; then
         if current=$("$PMSET" -g) && ! sleep_is_disabled "$current"; then
             /bin/rm -f "$MARKER"
@@ -161,9 +194,33 @@ enable|enable-limited)
     log "sleep override enabled; session marker written"
     ;;
 
+set-duration|set-deadline)
+    now=$(/bin/date +%s)
+    [ "$#" -eq 2 ] || invalid
+    if [ "$1" = "set-duration" ]; then
+        uint "$2" 1440 || invalid
+        new_deadline=0
+        if [ "$2" -gt 0 ]; then new_deadline=$((now + $2 * 60)); fi
+    else
+        validate_future_deadline "$2" "$now"
+        new_deadline=$2
+    fi
+    current=$("$PMSET" -g)
+    if ! read_session || ! sleep_is_disabled "$current" ||
+        { [ "$deadline" -gt 0 ] && [ "$now" -ge "$deadline" ]; }; then
+        echo "The Lid Closed session is no longer active." >&2
+        exit 1
+    fi
+    if ! /bin/launchctl print "$GUARD" >/dev/null 2>&1; then
+        echo "The LidClosed background guard is not loaded. Run the full installer." >&2
+        exit 1
+    fi
+    write_session "$new_deadline" "$battery" "$thermal"
+    log "active session deadline updated"
+    ;;
+
 disable)
-    "$PMSET" disablesleep 0
-    /bin/rm -f "$MARKER"
+    restore_sleep
     log "sleep override removed; marker cleared"
     ;;
 
@@ -174,8 +231,7 @@ cleanup)
         exit 0
     fi
     if [ -e "$MARKER" ]; then
-        "$PMSET" disablesleep 0
-        /bin/rm -f "$MARKER"
+        restore_sleep
         log "boot cleanup: restored system sleep left disabled by a previous session"
     fi
     ;;
@@ -183,10 +239,7 @@ cleanup)
 battery-guard)
     [ -f "$MARKER" ] || exit 0
     # Legacy timestamp markers retain their original battery protection.
-    if ! read -r version deadline battery thermal extra < "$MARKER" ||
-        [ "$version" != v2 ] || [ -n "$extra" ] ||
-        ! uint "$deadline" 9999999999 || ! uint "$battery" 100 ||
-        [ "$battery" -eq 0 ] || ! uint "$thermal" 3; then
+    if ! read_session; then
         deadline=0 battery=$LOW_BATTERY_PERCENT thermal=0
     fi
 
@@ -200,8 +253,7 @@ battery-guard)
     if [ "$thermal" -gt 0 ]; then state=$(thermal_state) || state=; fi
     reason=$("$PMSET" -g batt | limit_reason "$now" "$deadline" "$battery" "$thermal" "$state")
     if [ -n "$reason" ]; then
-        "$PMSET" disablesleep 0
-        /bin/rm -f "$MARKER"
+        restore_sleep
         log "session guard: $reason Restored system sleep."
     fi
     ;;

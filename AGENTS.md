@@ -85,7 +85,7 @@ marker is the only thing that lets the next launch recover.
 
 ```bash
 swift build -c debug          # or -c release
-swift test                    # 69 tests, no privileged calls, no real state file touched
+swift test                    # 74 tests, no privileged calls, no real state file touched
 ./scripts/install.sh          # build + bundle + sign + install app, helper and daemon
 ./scripts/uninstall.sh        # removes all of it, restoring sleep first
 ./scripts/state.sh            # read-only: what the app is actually doing right now

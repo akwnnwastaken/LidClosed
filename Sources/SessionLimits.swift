@@ -17,13 +17,33 @@ struct SessionLimits: Codable, Equatable {
     var minutes = 0
     var heat = Heat.off
     var battery = 0
+    var endMinuteOfDay: Int?
 
     static let lidClosedDefault = Self(battery: 20)
 
-    var isValid: Bool { (0...1440).contains(minutes) && (0...100).contains(battery) }
+    var isValid: Bool {
+        (0...1440).contains(minutes) && (0...100).contains(battery) &&
+            (endMinuteOfDay.map { minutes == 0 && (0..<1440).contains($0) } ?? true)
+    }
 
-    func deadline(from start: Date = .now) -> Date? {
-        minutes == 0 ? nil : start.addingTimeInterval(TimeInterval(minutes * 60))
+    var clockComponents: DateComponents? {
+        endMinuteOfDay.map { DateComponents(hour: $0 / 60, minute: $0 % 60, second: 0) }
+    }
+
+    func deadline(from start: Date, calendar: Calendar = .current) -> Date? {
+        if let clockComponents {
+            return calendar.nextDate(after: start, matching: clockComponents, matchingPolicy: .nextTime)
+        }
+        return minutes == 0 ? nil : start.addingTimeInterval(TimeInterval(minutes * 60))
+    }
+
+    func hasSameTimer(as other: Self) -> Bool {
+        minutes == other.minutes && endMinuteOfDay == other.endMinuteOfDay
+    }
+
+    mutating func copyTimer(from other: Self) {
+        minutes = other.minutes
+        endMinuteOfDay = other.endMinuteOfDay
     }
 
     func powerLimitReached(thermalState: ProcessInfo.ThermalState, batteryPercent: Int?) -> String? {
