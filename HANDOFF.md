@@ -1,8 +1,8 @@
 # HANDOFF
 
 Snapshot of where the work stands, so a fresh session can pick up without re-deriving
-context. **The session limits and menu bar panel below were built from `682b765`
-and installed locally as `v1.2.0`.**
+context. **`v1.2.1` adds active timer editing, clock timers, and panel status icons.**
+The previous release, `v1.2.0`, is `1806be8`.
 
 If the log has moved past that, only the round-by-round narrative below is behind — the design
 invariants in [AGENTS.md](AGENTS.md) and the open items in [TODO.md](TODO.md) are maintained
@@ -37,6 +37,8 @@ Narrative of every change: [WALKTHROUGH.md](WALKTHROUGH.md) — the most recent 
 Everything still open, all of it by choice: [TODO.md](TODO.md).
 
 ```
+1806be8  Release LidClosed 1.2.0 and automate future releases (#1)
+137a8df  Publish GitHub releases when the bundle version changes
 682b765  Add session limits and menu bar panel for LidClosed 1.2.0
 b71af1b  Point the handoff at the battery guard commit
 da087e5  Add a battery guard for Lid Closed Mode
@@ -63,6 +65,17 @@ mismeasured idle test, and `8d6d78e` restores it after the lock-screen test sett
 question. **`453eca3`'s conclusion is the correct one.** WALKTHROUGH.md §8 has the full account.
 
 ## What changed most recently
+
+**Panel status icon.** The header shows a moon while idle, a laptop for Lid Closed
+Mode, and a cup for Keep Awake. Both symbols appear together when both modes are
+active. An externally managed sleep setting shows a warning symbol.
+
+**Active timers.** Saving a changed duration starts a full new countdown. A clock
+timer ends at the next occurrence of the chosen local time. Keep Awake keeps its
+existing child. Lid Closed Mode asks for administrator approval, then updates the
+root marker under the existing lock. Its helper computes relative durations at that
+point and rejects a clock deadline that has passed. Battery and thermal settings
+remain next-session preferences.
 
 **Release workflow.** Pull requests and pushes to `main` run the macOS tests.
 After a passing push, a changed bundle version triggers a matching tag and GitHub Release.

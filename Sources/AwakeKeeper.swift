@@ -60,6 +60,8 @@ final class AwakeKeeper {
             return false
         }
 
+        let deadline = limits.deadline(from: .now)
+        guard limits.endMinuteOfDay == nil || deadline != nil else { return false }
         let pid = ProcessInfo.processInfo.processIdentifier
 
         do {
@@ -68,12 +70,12 @@ final class AwakeKeeper {
                 arguments: ["-dimsu", "-w", String(pid)]
             )
             self.limits = limits
-            deadline = limits.deadline()
+            self.deadline = deadline
             NSLog("[LidClosed] Keep-awake started (caffeinate -w \(pid))")
             return true
         } catch {
             process = nil
-            deadline = nil
+            self.deadline = nil
             NSLog("[LidClosed] Could not start caffeinate: \(error)")
             notifier.notify(
                 title: "Could Not Keep the Mac Awake",
@@ -82,6 +84,18 @@ final class AwakeKeeper {
             )
             return false
         }
+    }
+
+    @discardableResult
+    func updateTimer(_ settings: SessionLimits, now: Date = .now) -> Bool {
+        guard isActive, settings.isValid else { return false }
+        if let deadline, now >= deadline { return false }
+        if limits.hasSameTimer(as: settings) { return true }
+        let deadline = settings.deadline(from: now)
+        guard settings.endMinuteOfDay == nil || deadline != nil else { return false }
+        limits.copyTimer(from: settings)
+        self.deadline = deadline
+        return true
     }
 
     @discardableResult

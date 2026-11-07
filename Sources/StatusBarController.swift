@@ -8,10 +8,10 @@ final class StatusBarController: NSObject {
     private let popover = NSPopover()
     private let panel = PanelState()
     private var monitor: (any DispatchSourceTimer)?
-    private var lidSession: (limits: SessionLimits, deadline: Date?)?
+    private var lidSession: SessionLimits?
     private var awakeStopReason: String?
     private var isTogglingLid = false
-    private var supportsLidLimits = false
+    private var lidLimitsVersion = 0
 
     private let powerManager = PowerManager.shared
     private let awakeKeeper = AwakeKeeper.shared
@@ -39,7 +39,7 @@ final class StatusBarController: NSObject {
             toggle: { [weak self] mode in
                 if mode == .lidClosed { self?.toggleAction() } else { self?.keepAwakeAction() }
             },
-            save: { [weak self] in self?.saveLimits($0, for: $1) },
+            save: { [weak self] in self?.saveLimits($0, for: $1) ?? false },
             quit: { [weak self] in self?.quitAction() }
         ))
         hosting.sizingOptions = [.preferredContentSize]
@@ -100,7 +100,7 @@ final class StatusBarController: NSObject {
             return
         }
         guard let button = statusItem?.button else { return }
-        supportsLidLimits = powerManager.supportsSessionLimits
+        lidLimitsVersion = powerManager.sessionLimitsVersion
         monitorSessions(refreshSystem: true)
         popover.animates = !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
@@ -116,13 +116,29 @@ final class StatusBarController: NSObject {
         return limits
     }
 
-    private func saveLimits(_ limits: SessionLimits, for mode: PanelMode) {
+    private func saveLimits(_ limits: SessionLimits, for mode: PanelMode) -> Bool {
         guard limits.isValid, limits.battery >= mode.minimumBattery,
               let data = try? JSONEncoder().encode(limits)
-        else { return }
+        else { return false }
+        defer { monitorSessions(refreshSystem: mode == .lidClosed) }
+
+        switch mode {
+        case .lidClosed:
+            guard !isTogglingLid else { return false }
+            if lidLimitsVersion >= 2, var session = lidSession, !session.hasSameTimer(as: limits) {
+                isTogglingLid = true
+                defer { isTogglingLid = false }
+                guard powerManager.updateTimer(limits) else { return false }
+                session.copyTimer(from: limits)
+                lidSession = session
+            }
+        case .keepAwake:
+            if awakeKeeper.isActive { awakeKeeper.updateTimer(limits) }
+            awakeStopReason = nil
+        }
+
         UserDefaults.standard.set(data, forKey: mode.defaultsKey)
-        if mode == .keepAwake { awakeStopReason = nil }
-        updateUI()
+        return true
     }
 
     // MARK: - Actions
@@ -151,7 +167,7 @@ final class StatusBarController: NSObject {
             }
             let limits = savedLimits(for: .lidClosed)
             if powerManager.activate(limits: limits) {
-                lidSession = (limits, limits.deadline())
+                lidSession = limits
             }
         }
     }
@@ -216,12 +232,14 @@ final class StatusBarController: NSObject {
         let next = PanelState.Snapshot(
             status: String(statusText().dropFirst(2)),
             lid: .init(active: lidActive, saved: lidLimits,
-                       summary: Self.summary(lidSession?.limits ?? lidLimits, deadline: lidSession?.deadline),
-                       availability: supportsLidLimits ? nil : "Install the background guard to use custom limits.",
+                       summary: Self.summary(lidSession ?? lidLimits, deadline: powerManager.activeDeadline),
+                       activeTimer: lidLimitsVersion >= 2 ? lidSession : nil,
+                       availability: lidLimitsVersion >= 1 ? nil : "Install the background guard to use custom limits.",
                        managedExternally: external),
             awake: .init(active: awakeActive, saved: awakeLimits,
                          summary: awakeActive ? Self.summary(awakeKeeper.limits, deadline: awakeKeeper.deadline)
-                             : (awakeStopReason ?? Self.summary(awakeLimits)))
+                             : (awakeStopReason ?? Self.summary(awakeLimits)),
+                         activeTimer: awakeActive ? awakeKeeper.limits : nil)
         )
         if panel.snapshot != next { panel.snapshot = next }
         updateMonitor()
@@ -230,7 +248,10 @@ final class StatusBarController: NSObject {
     private static func summary(_ limits: SessionLimits, deadline: Date? = nil) -> String {
         var parts: [String] = []
         if let deadline {
-            parts.append(deadline <= .now ? "Time limit reached" : "Until \(deadline.formatted(date: .omitted, time: .shortened))")
+            let day = Calendar.current.isDateInTomorrow(deadline) ? "tomorrow at " : ""
+            parts.append(deadline <= .now ? "Time limit reached" : "Until \(day)\(deadline.formatted(date: .omitted, time: .shortened))")
+        } else if limits.endMinuteOfDay != nil, let end = limits.deadline(from: .now) {
+            parts.append("Until \(end.formatted(date: .omitted, time: .shortened))")
         } else if limits.minutes > 0 {
             parts.append("\(limits.minutes) min")
         }

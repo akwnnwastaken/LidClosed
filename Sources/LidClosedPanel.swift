@@ -17,6 +17,7 @@ final class PanelState: ObservableObject {
         var active = false
         var saved = SessionLimits()
         var summary = ""
+        var activeTimer: SessionLimits?
         var availability: String?
         var managedExternally = false
     }
@@ -33,7 +34,7 @@ final class PanelState: ObservableObject {
 struct LidClosedPanel: View {
     @ObservedObject var panel: PanelState
     let toggle: (PanelMode) -> Void
-    let save: (SessionLimits, PanelMode) -> Void
+    let save: (SessionLimits, PanelMode) -> Bool
     let quit: () -> Void
 
     @State private var expanded: PanelMode?
@@ -66,12 +67,7 @@ struct LidClosedPanel: View {
 
     private var header: some View {
         HStack(alignment: .top, spacing: 10) {
-            Image(systemName: "moon.zzz.fill")
-                .font(.system(size: 17, weight: .semibold))
-                .foregroundStyle(Color.accentColor)
-                .frame(width: 36, height: 36)
-                .background(Color.accentColor.opacity(0.14), in: RoundedRectangle(cornerRadius: 10))
-                .accessibilityHidden(true)
+            headerIcon
             VStack(alignment: .leading, spacing: 3) {
                 Text("LidClosed")
                     .font(.system(size: 17, weight: .semibold))
@@ -83,6 +79,27 @@ struct LidClosedPanel: View {
             }
         }
         .padding(.bottom, 2)
+    }
+
+    private var headerIcon: some View {
+        let state = panel.snapshot
+        let lidSymbol = state.lid.managedExternally ? "exclamationmark.triangle.fill"
+            : (state.lid.active ? PanelMode.lidClosed.symbol : nil)
+        let awakeSymbol = state.awake.active ? PanelMode.keepAwake.symbol : nil
+        let activeSymbols = [lidSymbol, awakeSymbol].compactMap { $0 }
+        let tint: Color = state.lid.managedExternally ? .orange
+            : (activeSymbols.isEmpty ? .secondary : .accentColor)
+
+        return HStack(spacing: 2) {
+            ForEach(activeSymbols.isEmpty ? ["moon.zzz.fill"] : activeSymbols, id: \.self) { symbol in
+                Image(systemName: symbol)
+                    .font(.system(size: activeSymbols.count > 1 ? 9 : 17, weight: .semibold))
+            }
+        }
+        .foregroundStyle(tint)
+        .frame(width: 36, height: 36)
+        .background(tint.opacity(0.14), in: RoundedRectangle(cornerRadius: 10))
+        .accessibilityHidden(true)
     }
 
     private func modeCard(_ mode: PanelMode, _ state: PanelState.Mode) -> some View {
@@ -103,7 +120,7 @@ private struct ModeCard: View {
     let expanded: Bool
     let edit: () -> Void
     let toggle: () -> Void
-    let save: (SessionLimits) -> Void
+    let save: (SessionLimits) -> Bool
 
     @State private var draft = LimitsDraft(SessionLimits())
     @State private var hasDraft = false
@@ -143,7 +160,9 @@ private struct ModeCard: View {
                 Spacer(minLength: 0)
                 Button {
                     if !hasDraft {
-                        draft = LimitsDraft(state.saved)
+                        var limits = state.saved
+                        if let activeTimer = state.activeTimer { limits.copyTimer(from: activeTimer) }
+                        draft = LimitsDraft(limits)
                         hasDraft = true
                     }
                     edit()
@@ -163,8 +182,9 @@ private struct ModeCard: View {
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 } else {
-                    LimitsFields(draft: $draft, minimumBattery: mode.minimumBattery) {
-                        save($0)
+                    LimitsFields(draft: $draft, minimumBattery: mode.minimumBattery,
+                                 updatesActiveTimer: state.activeTimer != nil) {
+                        guard save($0) else { return }
                         hasDraft = false
                         edit()
                     } cancel: {
@@ -192,15 +212,27 @@ private struct ModeCard: View {
 }
 
 private struct LimitsDraft {
+    enum TimerChoice: Hashable { case preset(Int), custom, endTime }
     static let presets = [0, 15, 30, 60, 120, 240, 480]
 
-    var preset: Int?
+    var timerChoice: TimerChoice
     var minutes: String
+    var endTime: Date
     var battery: String
     var heat: SessionLimits.Heat
 
     init(_ limits: SessionLimits) {
-        preset = Self.presets.contains(limits.minutes) ? limits.minutes : nil
+        let now = Date.now
+        if limits.endMinuteOfDay != nil {
+            timerChoice = .endTime
+        } else {
+            timerChoice = Self.presets.contains(limits.minutes) ? .preset(limits.minutes) : .custom
+        }
+        if let components = limits.clockComponents {
+            endTime = Calendar.current.nextDate(after: now, matching: components, matchingPolicy: .strict) ?? now
+        } else {
+            endTime = now.addingTimeInterval(3600)
+        }
         minutes = limits.minutes > 0 ? String(limits.minutes) : ""
         battery = String(limits.battery)
         heat = limits.heat
@@ -210,6 +242,7 @@ private struct LimitsDraft {
 private struct LimitsFields: View {
     @Binding var draft: LimitsDraft
     let minimumBattery: Int
+    let updatesActiveTimer: Bool
     let save: (SessionLimits) -> Void
     let cancel: () -> Void
 
@@ -221,21 +254,29 @@ private struct LimitsFields: View {
         VStack(alignment: .leading, spacing: 8) {
             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
                 GridRow {
-                    Text("Duration")
-                    Picker("Duration", selection: $draft.preset) {
+                    Text("Timer")
+                    Picker("Timer", selection: $draft.timerChoice) {
                         ForEach(LimitsDraft.presets, id: \.self) { preset in
-                            Text(preset == 0 ? "Unlimited" : "\(preset) min").tag(Optional(preset))
+                            Text(preset == 0 ? "Unlimited" : "\(preset) min").tag(LimitsDraft.TimerChoice.preset(preset))
                         }
-                        Text("Custom…").tag(nil as Int?)
+                        Text("Custom…").tag(LimitsDraft.TimerChoice.custom)
+                        Text("Until a time…").tag(LimitsDraft.TimerChoice.endTime)
                     }
                     .labelsHidden()
                 }
-                if draft.preset == nil {
+                if draft.timerChoice == .custom {
                     GridRow {
                         Text("Minutes")
                         TextField("1–1440", text: $draft.minutes)
                             .accessibilityLabel("Custom duration in minutes")
                             .focused($focus, equals: .duration)
+                    }
+                }
+                if draft.timerChoice == .endTime {
+                    GridRow {
+                        Text("Ends at")
+                        DatePicker("End time", selection: $draft.endTime, displayedComponents: .hourAndMinute)
+                            .labelsHidden()
                     }
                 }
                 GridRow {
@@ -261,9 +302,7 @@ private struct LimitsFields: View {
             .font(.subheadline)
             .onSubmit(submit)
 
-            Text(error ?? (minimumBattery == 0
-                ? "Applies next session. Battery cutoff works unplugged; 0% turns it off."
-                : "Applies next session. Battery cutoff works unplugged."))
+            Text(error ?? hint)
                 .font(.caption)
                 .foregroundStyle(error == nil ? Color.secondary : Color.red)
                 .fixedSize(horizontal: false, vertical: true)
@@ -278,12 +317,36 @@ private struct LimitsFields: View {
         }
     }
 
+    private var hint: String {
+        let timing = updatesActiveTimer
+            ? "Changing the timer applies now. Heat and battery apply next session."
+            : "Applies next session."
+        if draft.timerChoice == .endTime {
+            return "\(timing) Uses the next occurrence of the selected time."
+        }
+        let battery = minimumBattery == 0
+            ? "Battery cutoff works unplugged; 0% turns it off."
+            : "Battery cutoff works unplugged."
+        return "\(timing) \(battery)"
+    }
+
     private func submit() {
-        let minutes = draft.preset ?? Int(draft.minutes.trimmingCharacters(in: .whitespaces))
-        guard let minutes, (0...1440).contains(minutes), draft.preset != nil || minutes > 0 else {
-            error = "Enter a duration from 1 to 1,440 minutes."
-            focus = .duration
-            return
+        var limits = SessionLimits()
+        switch draft.timerChoice {
+        case .preset(let minutes):
+            limits.minutes = minutes
+        case .custom:
+            guard let minutes = Int(draft.minutes.trimmingCharacters(in: .whitespaces)),
+                  (1...1440).contains(minutes) else {
+                error = "Enter a duration from 1 to 1,440 minutes."
+                focus = .duration
+                return
+            }
+            limits.minutes = minutes
+        case .endTime:
+            let calendar = Calendar.current
+            limits.endMinuteOfDay = calendar.component(.hour, from: draft.endTime) * 60
+                + calendar.component(.minute, from: draft.endTime)
         }
         guard let battery = Int(draft.battery.trimmingCharacters(in: .whitespaces)),
               (minimumBattery...100).contains(battery)
@@ -292,6 +355,8 @@ private struct LimitsFields: View {
             focus = .battery
             return
         }
-        save(SessionLimits(minutes: minutes, heat: draft.heat, battery: battery))
+        limits.heat = draft.heat
+        limits.battery = battery
+        save(limits)
     }
 }

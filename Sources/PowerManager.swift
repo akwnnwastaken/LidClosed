@@ -29,6 +29,7 @@ final class PowerManager {
     private var signalSources: [any DispatchSourceSignal] = []
     private var didStart = false
     private var lastKnownSleepDisabled = false
+    private(set) var activeDeadline: Date?
 
     private static let pmsetPath = "/usr/bin/pmset"
 
@@ -88,11 +89,12 @@ final class PowerManager {
         return (Self.pmsetPath, ["disablesleep", enable ? "1" : "0"])
     }
 
-    var supportsSessionLimits: Bool {
+    var sessionLimitsVersion: Int {
         guard let helperPath, FileManager.default.isExecutableFile(atPath: helperPath),
-              let result = try? runner.run(executableURL: URL(fileURLWithPath: helperPath), arguments: ["limits-version"])
-        else { return false }
-        return result.status == 0 && result.output.trimmingCharacters(in: .whitespacesAndNewlines) == "1"
+              let result = try? runner.run(executableURL: URL(fileURLWithPath: helperPath), arguments: ["limits-version", "live-timer"]),
+              result.status == 0
+        else { return 0 }
+        return Int(result.output.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
     }
 
     /// Performs launch-time work: legacy migration, stale-state recovery and signal
@@ -196,19 +198,28 @@ final class PowerManager {
         }
 
         var command = overrideCommand(enable: true)
+        var clockDeadline: Date?
         if limits != .lidClosedDefault {
             guard limits.isValid, limits.battery > 0 else { return false }
-            guard supportsSessionLimits, let helperPath else {
+            let usesClock = limits.endMinuteOfDay != nil
+            guard sessionLimitsVersion >= (usesClock ? 2 : 1), let helperPath else {
                 notifier.notify(title: "Lid Closed Limits Are Unavailable",
                                 message: "Run the full LidClosed installer to update the background guard before starting a session with these limits.",
                                 informational: true)
                 return false
             }
-            command = (helperPath, ["enable-limited", String(limits.minutes), String(limits.battery), String(limits.heat.rawValue)])
+            var timerArguments = ["enable-limited", String(limits.minutes)]
+            if usesClock {
+                guard let deadline = limits.deadline(from: .now) else { return false }
+                clockDeadline = deadline
+                timerArguments = ["enable-until", Self.deadlineArgument(deadline)]
+            }
+            command = (helperPath, timerArguments + [String(limits.battery), String(limits.heat.rawValue)])
         }
         switch privilegedRunner.run(executablePath: command.path, arguments: command.arguments) {
         case .success:
             lastKnownSleepDisabled = true
+            activeDeadline = clockDeadline ?? limits.deadline(from: .now)
             NSLog("[LidClosed] Sleep override enabled")
             if !writeStateFile() {
                 // Sleep is off but we cannot track it, so automatic restore is impossible.
@@ -242,6 +253,30 @@ final class PowerManager {
             )
             return false
         }
+    }
+
+    func updateTimer(_ limits: SessionLimits) -> Bool {
+        guard limits.isValid, isOwnedByUs, sessionLimitsVersion >= 2, let helperPath else { return false }
+        var arguments = ["set-duration", String(limits.minutes)]
+        var clockDeadline: Date?
+        if limits.endMinuteOfDay != nil {
+            guard let deadline = limits.deadline(from: .now) else { return false }
+            clockDeadline = deadline
+            arguments = ["set-deadline", Self.deadlineArgument(deadline)]
+        }
+        switch privilegedRunner.run(executablePath: helperPath, arguments: arguments) {
+        case .success:
+            activeDeadline = clockDeadline ?? limits.deadline(from: .now)
+            return true
+        case .cancelled: return false
+        case .failed(let message):
+            notifier.notify(title: "Could Not Change the Active Timer", message: message, informational: false)
+            return false
+        }
+    }
+
+    private static func deadlineArgument(_ deadline: Date) -> String {
+        String(Int(deadline.timeIntervalSince1970.rounded(.down)))
     }
 
     /// Re-enables system sleep, if and only if we are the ones who disabled it.
@@ -428,6 +463,7 @@ final class PowerManager {
     }
 
     private func removeStateFile() {
+        activeDeadline = nil
         try? FileManager.default.removeItem(at: stateFileURL)
     }
 

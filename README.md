@@ -56,13 +56,15 @@ Keep Awake is the better choice whenever the lid can stay open: it needs no admi
 ### Session limits
 
 Click the menu bar icon, then **Edit limits** on either mode. The controls expand inside
-the same panel. Select **Save limits** to apply the choices to the next session:
+the same panel. Select **Save limits** to save the choices:
 
-- **Duration:** choose **Unlimited**, a preset, or **Custom…** to enter 1–1,440 minutes.
+- **Timer:** choose **Unlimited**, a preset, **Custom…** for 1–1,440 minutes, or **Until a time…** for a local clock time. If that time has passed today, the timer uses the next occurrence.
 - **Thermal level:** stop at Elevated, Serious, or Critical, as reported by macOS. This is a system heat level rather than a Celsius reading. Off is the default.
 - **Battery:** stop at or below a percentage while unplugged. Lid Closed Mode defaults to 20% and accepts 1–100%. Keep Awake also accepts 0% to turn off its battery limit.
 
-Settings apply the next time the mode starts. The first limit reached ends that mode, and it stays off until you start it again. If the battery or thermal limit is already reached, the mode does not start. The menu shows the active deadline or the saved duration and limits.
+Changing the timer updates an active session and saves the choice for next time. A new duration starts a full countdown when applied. In Lid Closed Mode, saving a changed timer asks for administrator approval and applies it after approval. This requires the updated helper. Battery and thermal changes apply the next time the mode starts.
+
+The first limit reached ends that mode, and it stays off until you start it again. If the battery or thermal limit is already reached, the mode does not start. The menu shows the active deadline or the saved duration and limits.
 
 Keep Awake checks every five seconds while active and on wake. Lid Closed Mode requires the full installer for custom limits. Its background guard checks once a minute and can restore sleep without prompting, even if the app has stopped.
 
