@@ -45,7 +45,7 @@ Reach for this one when you do not actually need clamshell operation: it needs *
 | Admin password | required | not needed |
 | Changes a system setting | yes, and it persists across reboots | no |
 | If the app crashes | recovered at next boot, or next launch | released automatically |
-| On battery at 20% or below | sleep is given back (battery guard) | not guarded — the lid is open |
+| On battery at or below a set percentage | 20% by default, adjustable | optional, off by default |
 
 Disabling lid-closed mode, or quitting from the menu, prompts for your password again and restores normal sleep behavior. Keep Awake just stops.
 
@@ -53,19 +53,32 @@ Neither one covers the other, so running both is a real combination: **the Mac s
 
 Keep Awake is the better choice whenever the lid can stay open: it needs no admin password, touches no persistent system setting, and leaves nothing to clean up if the app dies. Use Lid Closed Mode when the lid has to close — and turn on both if you also want the screen to stay on.
 
+### Session limits
+
+Click the menu bar icon, then **Edit limits** on either mode. The controls expand inside
+the same panel. Select **Save limits** to apply the choices to the next session:
+
+- **Duration:** choose **Unlimited**, a preset, or **Custom…** to enter 1–1,440 minutes.
+- **Thermal level:** stop at Elevated, Serious, or Critical, as reported by macOS. This is a system heat level rather than a Celsius reading. Off is the default.
+- **Battery:** stop at or below a percentage while unplugged. Lid Closed Mode defaults to 20% and accepts 1–100%. Keep Awake also accepts 0% to turn off its battery limit.
+
+Settings apply the next time the mode starts. The first limit reached ends that mode, and it stays off until you start it again. If the battery or thermal limit is already reached, the mode does not start. The menu shows the active deadline or the saved duration and limits.
+
+Keep Awake checks every five seconds while active and on wake. Lid Closed Mode requires the full installer for custom limits. Its background guard checks once a minute and can restore sleep without prompting, even if the app has stopped.
+
 ### Safety Features
 
 - **State Tracking** — The app writes a state file to `~/Library/Application Support/LidClosed` when it activates the override, and only ever disables an override it knows it owns. If sleep was already disabled by something else, LidClosed leaves it alone.
 - **Crash Recovery** — If the app crashes or is force-killed, the next launch detects the stale state file and offers to re-enable sleep. If a restore fails or you cancel the prompt, the state file is kept so recovery can be retried.
 - **Cleanup at Boot** — `scripts/install.sh` also installs a small root-owned helper and a LaunchDaemon that runs once at every boot. If a previous session left sleep disabled, the daemon restores it before you log in. This covers every way the Mac can go down — restart, shutdown, kernel panic, power loss, a flat battery — and is what stops the setting from outliving the session that asked for it. It only ever undoes an override LidClosed marked as its own, and does nothing while LidClosed is running.
-- **Battery Guard** — A closed Mac running on battery is usually in a bag, where it would run flat and can run hot. A second LaunchDaemon checks once a minute and, if Lid Closed Mode is on while the Mac is on battery at **20% or below**, gives sleep back so the Mac can sleep normally. Turning the mode on is refused outright in that state, with a message telling you to plug in. This runs as root because, with the lid shut, nobody is there to answer a password prompt; it reads only the battery level and LidClosed's own marker, and accepts no input. It is part of the full install — a hand-built copy without the helper does not have it.
+- **Session Guard** — The full installer adds a second LaunchDaemon that restores sleep when Lid Closed Mode reaches a session limit. It reads the root-owned marker and checks the system state once a minute. This lets it work with the lid closed, without an administrator prompt at the end of the session.
 - **Single Instance** — Only one copy runs at a time. A second instance would see the first one's state file, mistake the live override for a leftover, and try to undo it.
 - **Security** — The installation script installs the bundle with root ownership (`root:wheel`), so a process running as your user cannot swap the executable and inherit the root privileges the app requests. The bundle is also ad-hoc signed, which makes accidental corruption detectable — note that ad-hoc signatures are not a defence against a determined local attacker, since anyone can re-sign without a certificate.
 
 > [!NOTE]
 > This applies to **Lid Closed Mode only**. Restoring sleep needs root, and at logout there is nobody to type a password, so the app itself cannot clean up on the way out — the boot daemon above is what does it instead, on the way back in.
 >
-> One gap is left: **logging out while the Mac stays on.** Nothing reboots, so the daemon does not get its turn, and sleep stays disabled at the login window until someone logs in and launches LidClosed — or runs `sudo pmset disablesleep 0`. Closing that too would mean a root service running continuously, which is a bigger trade than the gap deserves. **Keep Awake has no such problem** and releases itself whatever happens to the app.
+> One gap is left: **logging out while the Mac stays on.** Logout itself does not restore sleep; it can stay disabled until a session limit is reached, someone logs in and launches LidClosed, or someone runs `sudo pmset disablesleep 0`. **Keep Awake has no such problem** and releases itself whatever happens to the app.
 
 ## Installation
 
@@ -85,7 +98,7 @@ It also installs three small pieces outside the app, all owned by `root`:
 |---|---|
 | `/Library/PrivilegedHelperTools/com.akwnnwastaken.LidClosed.helper` | Runs `pmset` and records whether LidClosed owns the override |
 | `/Library/LaunchDaemons/com.akwnnwastaken.LidClosed.cleanup.plist` | Runs the helper once at boot to restore sleep if a session left it disabled |
-| `/Library/LaunchDaemons/com.akwnnwastaken.LidClosed.batteryguard.plist` | Runs the helper every minute to give sleep back on battery at 20% or below |
+| `/Library/LaunchDaemons/com.akwnnwastaken.LidClosed.batteryguard.plist` | Runs the helper every minute to enforce Lid Closed Mode session limits |
 
 The build copy in `dist/` is deleted once the hardened copy is in place — it is owned by your user and launching it would reopen the escalation path that root ownership closes. Remove everything later with `./scripts/uninstall.sh`.
 
@@ -105,40 +118,40 @@ The binary will be at `.build/release/LidClosed`.
 swift test
 ```
 
-The suite covers the `pmset` output parser, the activate/deactivate/recovery state machine, privileged-command quoting, the battery guard's threshold decision (run through the real helper script), the `caffeinate` keeper and the single-instance lock. It runs entirely against injected test doubles: no test performs a privileged operation, spawns `caffeinate`, or touches the real state file in `~/Library/Application Support/LidClosed`.
+The suite covers the `pmset` output parser, the activate/deactivate/recovery state machine, privileged-command quoting, session limit enforcement (including the real helper's decision code), the `caffeinate` keeper and the single-instance lock. It uses test doubles and read-only helper commands: no test performs a privileged operation, spawns `caffeinate`, or touches the real state file in `~/Library/Application Support/LidClosed`.
 
 ## Usage
 
 **Lid closed:**
 
 1. Launch **LidClosed** — it appears as a laptop icon in your menu bar
-2. Click the icon → **▶ Enable Lid Closed Mode**
+2. Click the icon and turn on **Lid Closed Mode**
 3. Enter your admin password when prompted
 4. Close your lid — your Mac stays awake! ☕
-5. Click the icon → **⏹ Disable Lid Closed Mode** to return to normal behavior
+5. Turn off **Lid Closed Mode** in the same panel to return to normal behavior
 
 **Lid open** — no password, nothing to undo:
 
-1. Click the icon → **Keep Awake (Lid Open)**
-2. A checkmark appears and the icon becomes a cup
-3. Click it again to switch it off
+1. Click the icon and turn on **Keep Awake**
+2. The switch shows the active state and the menu bar icon becomes a cup
+3. Use the same switch to turn it off
 
 ### Menu Bar States
 
 | Icon | Status line |
 |------|-------------|
-| 🔒💻 | ○ Inactive — normal sleep behavior |
-| ☕ | ◐ Awake — but sleeps if you close the lid |
-| 🔓💻 | ● Awake with the lid closed — display can still turn off |
-| 🔓💻 | ● Awake with the lid closed — display stays on too |
-| 🔓💻 | ● Sleep disabled outside LidClosed — display can still turn off |
-| 🔓💻 | ● Sleep disabled outside LidClosed — display stays on |
+| 🔒💻 | Inactive — normal sleep behavior |
+| ☕ | Awake — but sleeps if you close the lid |
+| 🔓💻 | Awake with the lid closed — display can still turn off |
+| 🔓💻 | Awake with the lid closed — display stays on too |
+| 🔓💻 | Sleep disabled outside LidClosed — display can still turn off |
+| 🔓💻 | Sleep disabled outside LidClosed — display stays on |
 
 The status line names both protections, because neither implies the other. The icon reflects Lid Closed Mode when it is on, since that is the one that survives closing the lid.
 
 The menu bar draws template SF Symbols — `lock.laptopcomputer`, `cup.and.saucer` and `lock.open.laptopcomputer` — so they follow your light/dark menu bar. The emoji above are approximations.
 
-If sleep was disabled by something other than LidClosed — a manual `pmset` command or another app — the toggle reads **⚠ Managed Outside LidClosed…** and clicking it explains how to hand control over instead of changing the setting. LidClosed only ever turns off an override it created.
+If sleep was disabled by something other than LidClosed — a manual `pmset` command or another app — **Details** explains how to hand control over. LidClosed only ever turns off an override it created.
 
 ## Requirements
 
@@ -151,7 +164,7 @@ If sleep was disabled by something other than LidClosed — a manual `pmset` com
 > [!WARNING]
 > LidClosed modifies a **global system setting**. Deleting the app by hand while it is Active leaves your Mac unable to sleep. If the boot daemon is still installed, the next restart repairs it; if you delete that too, nothing will, and you have to revert the setting yourself.
 
-**Always click "Disable Lid Closed Mode" before uninstalling, and uninstall with `./scripts/uninstall.sh`** rather than dragging the app to the Trash. (Keep Awake needs no such care — it leaves nothing behind.)
+**Always turn off Lid Closed Mode before uninstalling, and uninstall with `./scripts/uninstall.sh`** rather than dragging the app to the Trash. (Keep Awake needs no such care — it leaves nothing behind.)
 
 To check what is currently set, run `./scripts/state.sh` from the repository.
 
@@ -180,7 +193,7 @@ sudo launchctl bootout system/com.akwnnwastaken.LidClosed.batteryguard
 sudo rm -f /Library/LaunchDaemons/com.akwnnwastaken.LidClosed.cleanup.plist
 sudo rm -f /Library/LaunchDaemons/com.akwnnwastaken.LidClosed.batteryguard.plist
 sudo rm -f /Library/PrivilegedHelperTools/com.akwnnwastaken.LidClosed.helper
-sudo rm -f /var/db/com.akwnnwastaken.LidClosed.active
+sudo rm -f /var/db/com.akwnnwastaken.LidClosed.active /var/db/com.akwnnwastaken.LidClosed.lock
 sudo rm -rf /Applications/LidClosed.app
 rm -rf ~/Library/Application\ Support/LidClosed
 ```
@@ -200,7 +213,7 @@ To see what the app is doing at any moment:
 ./scripts/state.sh
 ```
 
-It is read-only, and reports the running instance, both switches, the state file, the display timer, which build is installed (version, build number and commit, stamped by `install.sh` from git), whether the helper, both daemons and the boot marker are in place, and the current battery level.
+It is read-only, and reports the running instance, both switches, the state file, the display timer, which build is installed, whether the helper, both daemons and the boot marker are in place, and the current battery level. The menu bar panel shows the version from `Resources/Info.plist`; the installer also records the build number and commit when run from a git checkout.
 
 `./scripts/uninstall.sh` removes everything, in an order that cannot strand a disabled-sleep setting.
 

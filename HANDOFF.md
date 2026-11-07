@@ -1,7 +1,8 @@
 # HANDOFF
 
 Snapshot of where the work stands, so a fresh session can pick up without re-deriving
-context. **The newest commit described here is `da087e5` (2026-10-14), released as `v1.1.0`.**
+context. **The session limits and menu bar panel below are prepared for `v1.2.0`,
+based on `b71af1b` (`v1.1.0`).**
 
 If the log has moved past that, only the round-by-round narrative below is behind — the design
 invariants in [AGENTS.md](AGENTS.md) and the open items in [TODO.md](TODO.md) are maintained
@@ -30,11 +31,13 @@ deliberate deferrals are now closed too. **One functional gap is left, by choice
 | Deferred-items round (boot daemon, dist/, versioning, entitlement) | 4 closed |
 | Boot cleanup, real install and restart | verified, all three paths |
 | Quality checklist (exit cleanup, battery safety) | exit cleanup clean; battery guard added |
+| Per-mode session limits | duration, thermal state and battery thresholds; inline menu bar panel |
 
 Narrative of every change: [WALKTHROUGH.md](WALKTHROUGH.md) — the most recent round is §10.
 Everything still open, all of it by choice: [TODO.md](TODO.md).
 
 ```
+b71af1b  Point the handoff at the battery guard commit
 da087e5  Add a battery guard for Lid Closed Mode
 4f1fa49  Make the handoff self-orienting for a fresh session  (v1.0.0)
 fca48d9  Record the logout-gap analysis before deferring it
@@ -60,6 +63,34 @@ question. **`453eca3`'s conclusion is the correct one.** WALKTHROUGH.md §8 has 
 
 ## What changed most recently
 
+**Version display.** The panel footer reads the release version from the bundle.
+The installer preserves the version in `Resources/Info.plist` and records the build
+number and commit separately. Older tags no longer override the version on new builds.
+
+**Menu bar panel (2026-11-07, working tree).** The two mode switches and their summaries
+are shown in one native popover. **Edit limits** expands the form inside the selected card.
+Saving updates that mode's next-session preferences; drafts survive collapsing or dismissing
+the panel. The old modal form was removed. The panel was exercised in an isolated AppKit
+preview, with mock power commands: both modes saved independently, invalid battery input
+stayed inline, and Keep Awake updated the current state and deadline without closing the panel.
+
+**Session limits (2026-11-07, working tree).** The menu saves separate duration, thermal,
+and unplugged battery thresholds for each mode, applied at the next start. Keep Awake
+stops its `caffeinate` child in the app. Lid Closed Mode stores the active limits in the
+root-owned marker and uses the existing minute-by-minute daemon. The helper checks the
+initial conditions before enabling, validates and serializes privileged changes, and
+handles the previous timestamp-only marker. Old and missing helpers still support the
+original mode; custom limits are refused until the new guard is available.
+
+The suite passed 69 tests. An isolated native dialog accepted a valid custom duration and
+kept the form open on invalid input. A helper run against mock system commands verified
+activation, all three restore conditions, legacy markers, external ownership, and boot cleanup.
+The release bundle was built and signed; the new helper was not installed on the machine.
+See “Next up” for live verification.
+
+Historical v1.1.0 behavior:
+
+
 **Battery guard (2026-10-14).** A second LaunchDaemon,
 `com.akwnnwastaken.LidClosed.batteryguard`, runs the helper's new `battery-guard` subcommand
 every minute. If LidClosed's marker is present and the Mac is on battery at 20% or below, it
@@ -71,10 +102,6 @@ things that are easy to get wrong:
   purpose (AGENTS.md invariant 15).
 - **It is a separate daemon, not a `StartInterval` on the cleanup daemon.** A timer on
   `cleanup` would be TODO.md §1.1's rejected option B.
-
-**Not yet verified on hardware** — see "Next up". The installed build on the developer's
-machine predates it, and `./scripts/state.sh` reports `battery guard: not installed` until the
-next `./scripts/install.sh`.
 
 The previous round, kept for context:
 
@@ -102,13 +129,13 @@ sleep first, while the helper still exists.
 ## Verification status
 
 - `swift build` debug and release: clean, zero warnings.
-- `swift test`: **60 tests** passing. Covers the `pmset -g` parser; the full transition table
+- `swift test`: **69 tests** passing. Covers the `pmset -g` parser; the full transition table
   (activate success/cancel/failure/external-override, deactivate
   success/cancel/failure/unowned, silent restore success/failure/unowned, external-change
   syncing, state file contents); helper routing and all three fallback cases; privileged-command
   quoting, including a round trip through a real `/bin/sh` with hostile arguments; the
-  `caffeinate` keeper; the single-instance lock; every reachable status line; and the battery
-  guard's threshold decision, run through the real helper script.
+  `caffeinate` keeper; the single-instance lock; every reachable status line; and session-limit enforcement, including the helper's
+  time, thermal, and battery decisions and refusal to start without a compatible guard.
 - Manual scenarios against the real authentication dialog: enable with password, enable
   cancelled, disable with password, disable cancelled (×4), `kill -9` then relaunch recovery,
   external `pmset` change, and external override not being claimed.
@@ -177,13 +204,15 @@ place. AGENTS.md has the escape hatch if something is genuinely stuck.
 
 ## Next up
 
-**Verify the battery guard on hardware.** Run `./scripts/install.sh` from a real terminal, then
-`./scripts/state.sh` should read `battery guard: loaded`. With lid-closed mode on and unplugged,
-let the battery cross 20%, or switch the mode on below 20% to see the refusal. The guard logs
-through `logger`:
+**Verify the session guard on hardware.** Quit the installed app, run
+`./scripts/install.sh` from a real terminal, and check that `./scripts/state.sh` reports
+`session guard: loaded`. Start a one-minute Lid Closed session and verify that system sleep
+returns by the next guard run without a prompt. Repeat with a battery limit above the
+current charge (start plugged in, then unplug). Check a real macOS thermal transition
+separately. The guard logs through `logger`:
 
 ```bash
-/usr/bin/log show --last 1h --style compact --predicate 'process == "logger"' | grep -i "battery guard"
+/usr/bin/log show --last 1h --style compact --predicate 'process == "logger"' | grep -i "session guard"
 ```
 
 Then, as before:
@@ -210,10 +239,10 @@ A fresh reviewer tends to flag these as bugs. They are choices, with reasons.
   larger standing risk than the residual it would remove.
 - **The helper writes a second marker instead of reusing `state.json`.** At boot there is no
   guaranteed user home to read. Not redundancy.
-- **The battery guard is a root one-shot every minute, and it acts while the app is running.**
+- **The session guard is a root one-shot every minute, and it acts while the app is running.**
   Chosen over app-side checks because restoring sleep needs root and nobody can authenticate
   with the lid shut. It takes no input, so it is not the persistent IPC service rejected
-  above. The 20% threshold is `LOW_BATTERY_PERCENT` in the helper and nowhere else.
+  above. An old marker keeps the original 20% unplugged battery limit.
 - **`cleanup` refuses to act while a LidClosed process is alive.** This is not defensive
   padding: `launchctl bootstrap` during a re-install runs it immediately, and without the guard
   it would restore sleep under a running app that still believed it owned the override.

@@ -12,60 +12,153 @@
 # meant to close. /Library is root:wheel and not group-writable, which is why the helper
 # lives there and not under /Library/Application Support (root:admin).
 #
-# Three callers:
-#   - the app, via `do shell script … with administrator privileges` (enable / disable)
-#   - the LaunchDaemon com.akwnnwastaken.LidClosed.cleanup, at boot (cleanup)
-#   - the LaunchDaemon com.akwnnwastaken.LidClosed.batteryguard, every minute (battery-guard)
-#
-# The point of routing the app through here rather than calling pmset directly is the
-# marker: it is written as root, in the same operation that disables sleep, so the
-# boot-time cleanup has a trustworthy record of whether LidClosed owns the override.
-
+# The app authenticates to enable or disable. The existing boot and session daemons
+# can only restore sleep for an override recorded in our root-owned marker.
 set -eu
+umask 077
 
 PATH=/usr/bin:/bin:/usr/sbin:/sbin
 export PATH
 
 MARKER=/var/db/com.akwnnwastaken.LidClosed.active
+LOCK=/var/db/com.akwnnwastaken.LidClosed.lock
 PMSET=/usr/bin/pmset
+GUARD=system/com.akwnnwastaken.LidClosed.batteryguard
 TAG=com.akwnnwastaken.LidClosed.helper
-
-# At or below this charge, on battery, LidClosed gives sleep back. A lid-closed Mac on
-# battery is usually in a bag: left alone it runs flat, and it can run hot.
 LOW_BATTERY_PERCENT=20
 
 log() {
-    /usr/bin/logger -t "$TAG" "$1"
+    /usr/bin/logger -t "$TAG" "$1" || :
 }
 
-# Reads `pmset -g batt` output on stdin and succeeds only when the Mac is drawing from its
-# battery at or below LOW_BATTERY_PERCENT. Anything it cannot parse — a desktop, AC power,
-# unexpected output — counts as not low: the guard must never restore sleep under a user on
-# the strength of a guess.
+invalid() {
+    echo "Invalid LidClosed session limits." >&2
+    exit 64
+}
+
+# Canonical bounded decimals only; reject signs, leading zeros, and shell expressions.
+uint() {
+    case "$1" in
+        ''|*[!0-9]*|0?*) return 1 ;;
+    esac
+    [ "${#1}" -le 10 ] && [ "$1" -le "$2" ]
+}
+
 battery_low() {
-    /usr/bin/awk -v limit="$LOW_BATTERY_PERCENT" '
-        NR == 1 && /Battery Power/ { on_battery = 1 }
-        pct == "" && match($0, /[0-9]+%;/) { pct = substr($0, RSTART, RLENGTH - 2) }
+    /usr/bin/awk -v limit="$1" -v source="Now drawing from 'Battery Power'" '
+        NR == 1 && $0 == source { on_battery = 1 }
+        /-InternalBattery-/ && pct == "" && match($0, /[0-9]+%;/) {
+            pct = substr($0, RSTART, RLENGTH - 2)
+        }
         END { exit !(on_battery && pct != "" && pct + 0 <= limit) }
     '
 }
 
+thermal_state() {
+    # Use Foundation without running code from a user-owned bundle or home directory.
+    /usr/bin/env -i PATH="$PATH" HOME=/var/root /usr/bin/osascript -l JavaScript \
+        -e 'ObjC.import("Foundation"); $.NSProcessInfo.processInfo.thermalState'
+}
+
+# now, deadline (0 = unlimited), battery percentage, thermal limit (0 = off),
+# current thermal state (empty = unknown). Reads battery status on stdin.
+limit_reason() {
+    if [ "$2" -gt 0 ] && [ "$1" -ge "$2" ]; then
+        echo "Time limit reached."
+    elif [ "$4" -gt 0 ] && uint "$5" 3 && [ "$5" -ge "$4" ]; then
+        echo "Thermal limit reached."
+    elif battery_low "$3"; then
+        echo "The battery is at $3% or below while unplugged. Connect power first."
+    fi
+}
+
+sleep_is_disabled() {
+    printf '%s\n' "$1" | /usr/bin/awk '$1 == "SleepDisabled" && $2 == "1" { found = 1 } END { exit !found }'
+}
+
 case "${1:-}" in
-enable)
-    # Refused rather than allowed and undone a minute later by the battery guard, so the
-    # user is told why at the moment they can still plug in. The message reaches the app's
-    # "Could Not Disable Sleep" alert through `do shell script`'s error text.
-    if "$PMSET" -g batt | battery_low; then
-        echo "The battery is at ${LOW_BATTERY_PERCENT}% or below and the Mac is not plugged in. Connect power first." >&2
+limits-version)
+    /bin/launchctl print "$GUARD" >/dev/null 2>&1 || exit 1
+    echo 1
+    exit 0
+    ;;
+battery-low)
+    limit=${2:-$LOW_BATTERY_PERCENT}
+    uint "$limit" 100 || invalid
+    battery_low "$limit"
+    exit $?
+    ;;
+limits-check)
+    [ "$#" -eq 6 ] && uint "$2" 9999999999 && uint "$3" 9999999999 &&
+        uint "$4" 100 && [ "$4" -gt 0 ] && uint "$5" 3 &&
+        { [ -z "$6" ] || uint "$6" 3; } || invalid
+    shift
+    limit_reason "$@"
+    exit 0
+    ;;
+enable|enable-limited|disable|cleanup|battery-guard)
+    [ "$(/usr/bin/id -u)" -eq 0 ] || exit 77
+    if [ "$1" = "battery-guard" ] && [ ! -e "$MARKER" ]; then exit 0; fi
+    # A guard run must not act on a marker from a session that was just replaced.
+    exec /usr/bin/lockf -k -t 10 "$LOCK" "$0" locked "$@"
+    ;;
+locked)
+    [ "$(/usr/bin/id -u)" -eq 0 ] || exit 77
+    shift
+    ;;
+*)
+    exit 64
+    ;;
+esac
+
+case "${1:-}" in
+enable|enable-limited)
+    minutes=0 battery=$LOW_BATTERY_PERCENT thermal=0
+    if [ "$1" = "enable-limited" ]; then
+        [ "$#" -eq 4 ] && uint "$2" 1440 && uint "$3" 100 &&
+            [ "$3" -gt 0 ] && uint "$4" 3 || invalid
+        minutes=$2 battery=$3 thermal=$4
+        if ! /bin/launchctl print "$GUARD" >/dev/null 2>&1; then
+            echo "The LidClosed background guard is not loaded. Run the full installer." >&2
+            exit 1
+        fi
+    fi
+
+    state=
+    if [ "$thermal" -gt 0 ]; then
+        if ! state=$(thermal_state) || ! uint "$state" 3; then
+            echo "LidClosed could not read the macOS thermal state. Try again." >&2
+            exit 1
+        fi
+    fi
+    reason=$("$PMSET" -g batt | limit_reason 0 0 "$battery" "$thermal" "$state")
+    if [ -n "$reason" ]; then
+        echo "$reason" >&2
+        exit 1
+    fi
+    current=$("$PMSET" -g)
+    if sleep_is_disabled "$current"; then
+        echo "System sleep is already disabled. LidClosed did not take ownership." >&2
         exit 1
     fi
 
-    # `set -e` means the marker is written only if pmset actually succeeded, so the
-    # marker can never claim an override that was not applied.
-    "$PMSET" disablesleep 1
-    /bin/date -u +%Y-%m-%dT%H:%M:%SZ > "$MARKER"
-    /bin/chmod 600 "$MARKER"
-    log "sleep override enabled; marker written"
+    deadline=0
+    if [ "$minutes" -gt 0 ]; then
+        now=$(/bin/date +%s)
+        deadline=$((now + minutes * 60))
+    fi
+    # Persist recovery information first: an interruption must not strand pmset enabled.
+    staged=$(/usr/bin/mktemp "${MARKER}.XXXXXX")
+    trap '/bin/rm -f "$staged"' EXIT
+    printf 'v2 %s %s %s\n' "$deadline" "$battery" "$thermal" > "$staged"
+    /bin/mv -f "$staged" "$MARKER"
+    if ! "$PMSET" disablesleep 1; then
+        if current=$("$PMSET" -g) && ! sleep_is_disabled "$current"; then
+            /bin/rm -f "$MARKER"
+        fi
+        exit 1
+    fi
+    log "sleep override enabled; session marker written"
     ;;
 
 disable)
@@ -75,58 +168,44 @@ disable)
     ;;
 
 cleanup)
-    # Runs once at boot from the LaunchDaemon. A marker present this early means a
-    # previous session disabled sleep and never restored it: no LidClosed process can
-    # have survived the reboot, so there is nothing to coordinate with and no dialog to
-    # wait for. This is what stops `SleepDisabled 1` — which is persisted to
-    # /Library/Preferences/com.apple.PowerManagement.plist — from outliving the session
-    # that asked for it.
-    #
-    # If pmset fails here, `set -e` leaves the marker in place and the next boot retries.
-    #
-    # The liveness guard costs nothing at boot, where no LidClosed can be running, and
-    # exists for the other time this runs: `launchctl bootstrap` during a re-install. An
-    # unguarded cleanup there would restore sleep out from under a user who has lid-closed
-    # mode switched on, while the app still believed it owned the override.
+    # bootstrap on reinstall also runs this; leave a live session alone.
     if /usr/bin/pgrep -x LidClosed > /dev/null 2>&1; then
         log "cleanup: LidClosed is running, leaving the override alone"
         exit 0
     fi
-
     if [ -e "$MARKER" ]; then
         "$PMSET" disablesleep 0
         /bin/rm -f "$MARKER"
         log "boot cleanup: restored system sleep left disabled by a previous session"
-    else
-        log "boot cleanup: nothing to restore"
     fi
     ;;
 
 battery-guard)
-    # Runs every minute from the LaunchDaemon com.akwnnwastaken.LidClosed.batteryguard.
-    # The app cannot do this itself: restoring sleep needs root, and with the lid shut
-    # there is nobody to answer a password prompt.
-    #
-    # Unlike `cleanup`, this deliberately acts while LidClosed is running — a live session
-    # is exactly the case it exists for. The app notices sleep came back the next time it
-    # reads `pmset` and drops its own state file.
-    [ -e "$MARKER" ] || exit 0
+    [ -f "$MARKER" ] || exit 0
+    # Legacy timestamp markers retain their original battery protection.
+    if ! read -r version deadline battery thermal extra < "$MARKER" ||
+        [ "$version" != v2 ] || [ -n "$extra" ] ||
+        ! uint "$deadline" 9999999999 || ! uint "$battery" 100 ||
+        [ "$battery" -eq 0 ] || ! uint "$thermal" 3; then
+        deadline=0 battery=$LOW_BATTERY_PERCENT thermal=0
+    fi
 
-    if "$PMSET" -g batt | battery_low; then
+    current=$("$PMSET" -g)
+    if ! sleep_is_disabled "$current"; then
+        /bin/rm -f "$MARKER"
+        exit 0
+    fi
+    now=$(/bin/date +%s)
+    state=
+    if [ "$thermal" -gt 0 ]; then state=$(thermal_state) || state=; fi
+    reason=$("$PMSET" -g batt | limit_reason "$now" "$deadline" "$battery" "$thermal" "$state")
+    if [ -n "$reason" ]; then
         "$PMSET" disablesleep 0
         /bin/rm -f "$MARKER"
-        log "battery guard: on battery at ${LOW_BATTERY_PERCENT}% or below, restored system sleep"
+        log "session guard: $reason Restored system sleep."
     fi
     ;;
-
-battery-low)
-    # Pure decision, no privileged action: parses `pmset -g batt` output from stdin. Exists
-    # so the threshold logic can be tested without root.
-    battery_low
-    ;;
-
 *)
-    echo "usage: $(basename "$0") enable|disable|cleanup|battery-guard|battery-low" >&2
     exit 64
     ;;
 esac

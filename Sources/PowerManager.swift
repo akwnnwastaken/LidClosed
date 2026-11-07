@@ -28,6 +28,7 @@ final class PowerManager {
     /// Keeps DispatchSource references alive.
     private var signalSources: [any DispatchSourceSignal] = []
     private var didStart = false
+    private var lastKnownSleepDisabled = false
 
     private static let pmsetPath = "/usr/bin/pmset"
 
@@ -87,6 +88,13 @@ final class PowerManager {
         return (Self.pmsetPath, ["disablesleep", enable ? "1" : "0"])
     }
 
+    var supportsSessionLimits: Bool {
+        guard let helperPath, FileManager.default.isExecutableFile(atPath: helperPath),
+              let result = try? runner.run(executableURL: URL(fileURLWithPath: helperPath), arguments: ["limits-version"])
+        else { return false }
+        return result.status == 0 && result.output.trimmingCharacters(in: .whitespacesAndNewlines) == "1"
+    }
+
     /// Performs launch-time work: legacy migration, stale-state recovery and signal
     /// handler installation.
     ///
@@ -106,7 +114,9 @@ final class PowerManager {
     // MARK: - System State
 
     /// True if `pmset` currently reports that sleep is disabled, regardless of who did it.
-    var isSleepDisabledSystemWide: Bool {
+    var isSleepDisabledSystemWide: Bool { sleepOverrideStatus == true }
+
+    private var sleepOverrideStatus: Bool? {
         do {
             let (status, output) = try runner.run(
                 executableURL: URL(fileURLWithPath: Self.pmsetPath),
@@ -114,12 +124,12 @@ final class PowerManager {
             )
             guard status == 0 else {
                 NSLog("[LidClosed] pmset -g exited with status \(status)")
-                return false
+                return nil
             }
             return output.range(of: #"SleepDisabled[ \t]+1\b"#, options: .regularExpression) != nil
         } catch {
             NSLog("[LidClosed] Failed to check pmset status: \(error)")
-            return false
+            return nil
         }
     }
 
@@ -141,10 +151,11 @@ final class PowerManager {
     ///   spawning a second `pmset`.
     @discardableResult
     func syncStateWithSystem() -> Bool {
-        let isDisabled = isSleepDisabledSystemWide
+        guard let isDisabled = sleepOverrideStatus else { return lastKnownSleepDisabled || isOwnedByUs }
+        lastKnownSleepDisabled = isDisabled
 
         if isOwnedByUs && !isDisabled {
-            NSLog("[LidClosed] Sleep was re-enabled outside the app (manual pmset, or the battery guard) — clearing our state file")
+            NSLog("[LidClosed] Sleep was re-enabled outside the app (manual pmset or session guard) — clearing our state file")
             removeStateFile()
         }
 
@@ -155,12 +166,18 @@ final class PowerManager {
 
     /// Disables system sleep, including lid-close sleep.
     @discardableResult
-    func activate() -> Bool {
+    func activate(limits: SessionLimits = .lidClosedDefault) -> Bool {
         guard !isOwnedByUs else { return true }
 
+        guard let isDisabled = sleepOverrideStatus else {
+            notifier.notify(title: "Could Not Check System Sleep",
+                            message: "LidClosed could not read the current power setting. Try again.",
+                            informational: false)
+            return false
+        }
         // Never claim an override we did not create. Otherwise a later Disable would
         // turn off a setting the user (or another app) configured deliberately.
-        if isSleepDisabledSystemWide {
+        if isDisabled {
             NSLog("[LidClosed] Sleep already disabled by something else — not taking ownership")
             notifier.notify(
                 title: "Sleep Is Already Disabled",
@@ -178,9 +195,20 @@ final class PowerManager {
             return false
         }
 
-        let command = overrideCommand(enable: true)
+        var command = overrideCommand(enable: true)
+        if limits != .lidClosedDefault {
+            guard limits.isValid, limits.battery > 0 else { return false }
+            guard supportsSessionLimits, let helperPath else {
+                notifier.notify(title: "Lid Closed Limits Are Unavailable",
+                                message: "Run the full LidClosed installer to update the background guard before starting a session with these limits.",
+                                informational: true)
+                return false
+            }
+            command = (helperPath, ["enable-limited", String(limits.minutes), String(limits.battery), String(limits.heat.rawValue)])
+        }
         switch privilegedRunner.run(executablePath: command.path, arguments: command.arguments) {
         case .success:
+            lastKnownSleepDisabled = true
             NSLog("[LidClosed] Sleep override enabled")
             if !writeStateFile() {
                 // Sleep is off but we cannot track it, so automatic restore is impossible.
@@ -227,6 +255,7 @@ final class PowerManager {
         let command = overrideCommand(enable: false)
         switch privilegedRunner.run(executablePath: command.path, arguments: command.arguments) {
         case .success:
+            lastKnownSleepDisabled = false
             removeStateFile()
             NSLog("[LidClosed] Sleep override removed")
             return true
@@ -325,7 +354,8 @@ final class PowerManager {
         // Process liveness is logged for diagnosis only, never used to skip recovery:
         // pids are recycled, and wrongly skipping recovery leaves the Mac unable to sleep.
 
-        guard isSleepDisabledSystemWide else {
+        guard let isDisabled = sleepOverrideStatus else { return }
+        guard isDisabled else {
             NSLog("[LidClosed] Sleep is already enabled — clearing stale state file")
             removeStateFile()
             return

@@ -7,6 +7,7 @@ import XCTest
 final class MockCommandRunner: CommandRunner, @unchecked Sendable {
     var status: Int32
     var output: String
+    var limitsVersion: String?
     private(set) var invocations: [String] = []
 
     init(status: Int32 = 0, output: String = "") {
@@ -16,6 +17,7 @@ final class MockCommandRunner: CommandRunner, @unchecked Sendable {
 
     func run(executableURL: URL, arguments: [String]) throws -> (status: Int32, output: String) {
         invocations.append(([executableURL.path] + arguments).joined(separator: " "))
+        if arguments == ["limits-version"], let limitsVersion { return (0, limitsVersion) }
         return (status, output)
     }
 }
@@ -366,6 +368,37 @@ final class LidClosedTests: XCTestCase {
         XCTAssertTrue(stateFileExists)
     }
 
+    func testFailedStatusReadKeepsOwnershipDuringPolling() {
+        let (pm, runner, _, _) = makeManager()
+        XCTAssertTrue(pm.activate())
+        runner.status = 1
+
+        XCTAssertTrue(pm.syncStateWithSystem())
+        XCTAssertTrue(stateFileExists)
+    }
+
+    func testLimitedActivationRequiresUpdatedGuard() throws {
+        let helper = try makeFakeHelper()
+        let (pm, runner, privileged, notifier) = makeManager(helperPath: helper)
+        let limits = SessionLimits(minutes: 30, heat: .serious, battery: 35)
+
+        XCTAssertFalse(pm.activate(limits: limits))
+        XCTAssertTrue(privileged.invocations.isEmpty)
+        XCTAssertFalse(stateFileExists)
+        XCTAssertEqual(notifier.messages.count, 1)
+
+        runner.limitsVersion = "1\n"
+        XCTAssertTrue(pm.activate(limits: limits))
+        XCTAssertEqual(privileged.invocations, ["\(helper) enable-limited 30 35 2"])
+        XCTAssertTrue(stateFileExists)
+    }
+
+    func testLimitedActivationDoesNotFallBackToAnUnguardedOverride() {
+        let (pm, _, privileged, _) = makeManager()
+        XCTAssertFalse(pm.activate(limits: SessionLimits(minutes: 30, battery: 20)))
+        XCTAssertTrue(privileged.invocations.isEmpty)
+    }
+
     // MARK: - State file contents
 
     func testStateFileRecordsOwningProcess() throws {
@@ -495,19 +528,24 @@ final class BatteryGuardTests: XCTestCase {
         """
     }
 
-    private func isLow(_ input: String) throws -> Bool {
+    private func run(_ arguments: [String], _ input: String) throws -> (Int32, String) {
         let process = Process()
         let stdin = Pipe()
+        let stdout = Pipe()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
-        process.arguments = [Self.helperURL.path, "battery-low"]
+        process.arguments = [Self.helperURL.path] + arguments
         process.standardInput = stdin
-        process.standardOutput = FileHandle.nullDevice
+        process.standardOutput = stdout
         process.standardError = FileHandle.nullDevice
         try process.run()
         stdin.fileHandleForWriting.write(Data(input.utf8))
         try stdin.fileHandleForWriting.close()
         process.waitUntilExit()
-        return process.terminationStatus == 0
+        return (process.terminationStatus, String(decoding: stdout.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self))
+    }
+
+    private func isLow(_ input: String) throws -> Bool {
+        try run(["battery-low"], input).0 == 0
     }
 
     func testHealthyBatteryIsNotLow() throws {
@@ -541,6 +579,26 @@ final class BatteryGuardTests: XCTestCase {
     func testUnparseableOutputIsNotLow() throws {
         XCTAssertFalse(try isLow(""))
         XCTAssertFalse(try isLow("Now drawing from 'Battery Power'\n -InternalBattery-0 garbage\n"))
+    }
+
+    func testSessionGuardStopsAtTheDeadlineEvenOnACPower() throws {
+        XCTAssertEqual(try run(["limits-check", "100", "100", "35", "2", "0"], batt("AC Power", 90)).1,
+                       "Time limit reached.\n")
+        XCTAssertEqual(try run(["limits-check", "99", "100", "35", "2", "0"], batt("AC Power", 90)).1, "")
+    }
+
+    func testSessionGuardUsesThermalLevelAndCustomUnpluggedBatteryLimit() throws {
+        XCTAssertEqual(try run(["limits-check", "100", "0", "35", "2", "2"], batt("AC Power", 90)).1,
+                       "Thermal limit reached.\n")
+        XCTAssertTrue(try run(["limits-check", "100", "0", "35", "2", ""], batt("Battery Power", 35)).1.contains("35%"))
+        XCTAssertEqual(try run(["limits-check", "100", "0", "35", "2", "1"], batt("AC Power", 35)).1, "")
+        XCTAssertEqual(try run(["limits-check", "100", "0", "35", "2", "1"], batt("Battery Power", 36)).1, "")
+    }
+
+    func testSessionGuardRejectsMalformedLimitArguments() throws {
+        for invalid in ["-1", "101", "035", "3+4", "0"] {
+            XCTAssertEqual(try run(["limits-check", "100", "0", invalid, "0", ""], "").0, 64)
+        }
     }
 }
 
@@ -619,10 +677,12 @@ final class AwakeKeeperTests: XCTestCase {
     func testLaunchFailureLeavesKeeperInactive() {
         let launcher = MockProcessLauncher()
         launcher.shouldThrow = true
-        let keeper = AwakeKeeper(launcher: launcher)
+        let notifier = MockNotifier()
+        let keeper = AwakeKeeper(launcher: launcher, notifier: notifier)
 
         XCTAssertFalse(keeper.start())
         XCTAssertFalse(keeper.isActive)
+        XCTAssertEqual(notifier.messages.count, 1)
     }
 
     /// A child that exited on its own must not still read as active.
@@ -632,6 +692,47 @@ final class AwakeKeeperTests: XCTestCase {
         XCTAssertTrue(keeper.start())
 
         launcher.lastProcess?.isRunning = false
+        XCTAssertFalse(keeper.isActive)
+    }
+
+    func testTimedSessionStopsAtItsDeadlineAndStillBindsChildToApp() throws {
+        let launcher = MockProcessLauncher()
+        let keeper = AwakeKeeper(launcher: launcher)
+        XCTAssertTrue(keeper.start(limits: SessionLimits(minutes: 15)))
+        let deadline = try XCTUnwrap(keeper.deadline)
+        XCTAssertNil(keeper.enforceLimits(now: deadline.addingTimeInterval(-1)))
+        XCTAssertTrue(keeper.isActive)
+        XCTAssertEqual(launcher.invocations.first?.suffix(2), ["-w", String(ProcessInfo.processInfo.processIdentifier)][...])
+
+        XCTAssertNotNil(keeper.enforceLimits(now: deadline))
+        XCTAssertFalse(keeper.isActive)
+        XCTAssertEqual(launcher.lastProcess?.terminateCallCount, 1)
+    }
+
+    func testThermalLimitRefusesHotStartAndStopsRunningSession() {
+        let launcher = MockProcessLauncher()
+        let notifier = MockNotifier()
+        var state = ProcessInfo.ThermalState.serious
+        let keeper = AwakeKeeper(launcher: launcher, notifier: notifier, thermalState: { state })
+        let limits = SessionLimits(heat: .serious)
+        XCTAssertFalse(keeper.start(limits: limits))
+        XCTAssertTrue(launcher.invocations.isEmpty)
+        XCTAssertEqual(notifier.messages.count, 1)
+
+        state = .fair
+        XCTAssertTrue(keeper.start(limits: limits))
+        state = .critical
+        XCTAssertNotNil(keeper.enforceLimits())
+        XCTAssertFalse(keeper.isActive)
+    }
+
+    func testBatteryLimitStopsOnlyWhileUnplugged() {
+        let runner = MockCommandRunner(output: "Now drawing from 'AC Power'\n -InternalBattery-0 25%; charging")
+        let keeper = AwakeKeeper(launcher: MockProcessLauncher(), runner: runner)
+        XCTAssertTrue(keeper.start(limits: SessionLimits(battery: 25)))
+        XCTAssertNil(keeper.enforceLimits())
+        runner.output = "Now drawing from 'Battery Power'\n -InternalBattery-0 25%; discharging"
+        XCTAssertNotNil(keeper.enforceLimits())
         XCTAssertFalse(keeper.isActive)
     }
 }

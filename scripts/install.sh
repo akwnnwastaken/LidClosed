@@ -43,13 +43,11 @@ cp "${BUILD_DIR}/${APP_NAME}" "${APP_PATH}/Contents/MacOS/"
 # Copy Info.plist
 cp "Resources/Info.plist" "${APP_PATH}/Contents/"
 
-# Stamp the version from git. Only the copy inside the bundle is edited — Resources/Info.plist
-# stays clean, so building never dirties the working tree.
+# Keep the release version from Info.plist. Stamp the build number and source commit
+# only in the packaged copy so an older release tag cannot relabel a new build.
 #
 # Worth having because "which build is installed?" was previously answered by comparing file
-# timestamps against the git log. CFBundleVersion is the commit count (monotonic, and a valid
-# period-separated integer); the short version comes from the latest tag if there is one, and
-# is otherwise left alone rather than invented.
+# timestamps against the git log. CFBundleVersion is the commit count.
 BUNDLE_PLIST="${APP_PATH}/Contents/Info.plist"
 if git rev-parse --git-dir > /dev/null 2>&1; then
     GIT_COUNT="$(git rev-list --count HEAD)"
@@ -58,12 +56,6 @@ if git rev-parse --git-dir > /dev/null 2>&1; then
     git diff --quiet HEAD 2>/dev/null || GIT_DIRTY="+dirty"
 
     /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${GIT_COUNT}" "${BUNDLE_PLIST}" > /dev/null
-
-    GIT_TAG="$(git describe --tags --abbrev=0 2>/dev/null || true)"
-    if [ -n "${GIT_TAG}" ]; then
-        /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${GIT_TAG#v}" \
-            "${BUNDLE_PLIST}" > /dev/null
-    fi
 
     # Not a CFBundle key: records the exact commit, which a version number cannot.
     /usr/libexec/PlistBuddy -c "Add :LidClosedGitCommit string ${GIT_SHA}${GIT_DIRTY}" \
@@ -176,9 +168,9 @@ if [[ "${REPLY}" =~ ^[Yy]$ ]]; then
     sudo launchctl bootstrap system "${DAEMON_PLIST}"
     echo "  ✅ Daemon ${DAEMON_LABEL} loaded"
 
-    # Gives sleep back on battery at low charge, while lid-closed mode is on. It has to be
+    # Gives sleep back at a session limit, while lid-closed mode is on. It has to be
     # root because nobody can answer a password prompt with the lid shut.
-    echo "  Installing battery guard daemon..."
+    echo "  Installing session guard daemon..."
     sudo install -o root -g wheel -m 644 "Resources/${GUARD_LABEL}.plist" "${GUARD_PLIST}"
     sudo launchctl bootout "system/${GUARD_LABEL}" 2>/dev/null || true
     sudo launchctl bootstrap system "${GUARD_PLIST}"
@@ -205,5 +197,5 @@ else
     echo "   A manual copy also skips the privileged helper and both daemons."
     echo "   The app still works: it calls pmset directly and recovers a leftover override"
     echo "   on next launch, which is how it behaved before the daemons existed. What you"
-    echo "   lose is cleanup at restart or shutdown, and the low-battery guard."
+    echo "   lose is cleanup at restart or shutdown, and the automatic Lid Closed limits."
 fi
