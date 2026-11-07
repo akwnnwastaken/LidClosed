@@ -77,7 +77,7 @@ else
     echo "missing — app falls back to calling pmset directly, no cleanup at restart"
 fi
 
-for ENTRY in "boot daemon:|$DAEMON_LABEL" "battery guard:|$GUARD_LABEL"; do
+for ENTRY in "boot daemon:|$DAEMON_LABEL" "session guard:|$GUARD_LABEL"; do
     NAME=${ENTRY%%|*}
     LABEL=${ENTRY#*|}
     printf '%-14s ' "$NAME"
@@ -93,7 +93,7 @@ done
 printf '%-14s ' "battery:"
 /usr/bin/pmset -g batt | awk 'NR == 1 { sub(/^Now drawing from /, ""); src = $0 }
     match($0, /[0-9]+%;/) { pct = substr($0, RSTART, RLENGTH - 1) }
-    END { print (pct == "" ? "none" : pct) " — " src " (guard acts on battery at 20% or below)" }'
+    END { print (pct == "" ? "none" : pct) " — " src }'
 
 # Root-owned, mode 600: existence is visible to anyone, contents are not.
 printf '%-14s ' "boot marker:"

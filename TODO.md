@@ -11,7 +11,8 @@ the design invariants are in [AGENTS.md](AGENTS.md).
 
 ### 1.1 Logout while the Mac stays on
 
-The boot daemon closed the large half of this problem: every way the Mac goes *down* —
+The session guard still enforces its configured limits after logout, but logout itself
+does not end a session. The boot daemon closed the large half of this problem: every way the Mac goes *down* —
 restart, shutdown, kernel panic, power loss, a flat battery — is now cleaned up on the way
 back up, before anyone logs in. What is left is the case where nothing reboots.
 

@@ -23,6 +23,7 @@ DAEMON_PLIST="/Library/LaunchDaemons/${DAEMON_LABEL}.plist"
 GUARD_LABEL="com.akwnnwastaken.LidClosed.batteryguard"
 GUARD_PLIST="/Library/LaunchDaemons/${GUARD_LABEL}.plist"
 MARKER="/var/db/com.akwnnwastaken.LidClosed.active"
+HELPER_LOCK="/var/db/com.akwnnwastaken.LidClosed.lock"
 USER_STATE="${HOME}/Library/Application Support/LidClosed"
 
 echo "🧹 LidClosed uninstaller"
@@ -33,6 +34,7 @@ echo "   ${HELPER_PATH}"
 echo "   ${DAEMON_PLIST}  (and unloads the daemon)"
 echo "   ${GUARD_PLIST}  (and unloads the daemon)"
 echo "   ${MARKER}"
+echo "   ${HELPER_LOCK}"
 echo "   ${USER_STATE}"
 echo ""
 
@@ -87,7 +89,7 @@ for LABEL in "${DAEMON_LABEL}" "${GUARD_LABEL}"; do
     fi
 done
 
-sudo rm -f "${HELPER_PATH}" "${MARKER}"
+sudo rm -f "${HELPER_PATH}" "${MARKER}" "${HELPER_LOCK}"
 echo "  ✅ Helper and marker removed"
 
 sudo rm -rf "${INSTALLED_APP}"

@@ -27,11 +27,10 @@ second has none of that by design.
 
 Lid Closed Mode reaches `pmset` through a **root-owned helper script** installed outside the
 bundle, and a **LaunchDaemon** runs that helper once at every boot to undo an override a
-previous session never restored. A second LaunchDaemon runs it every minute as a **battery
-guard**, giving sleep back when lid-closed mode is on and the Mac is on battery at 20% or
-below. The app falls back to calling `pmset` directly when the
-helper is absent, so a hand-built copy still works — with cleanup at restart and the battery
-guard being what it loses.
+previous session never restored. A second LaunchDaemon runs it every minute as a **session
+guard**, giving sleep back when an owned session reaches its time, thermal, or unplugged
+battery limit (20% by default). The app falls back to calling `pmset` directly when the
+helper is absent, so a hand-built copy still works — with cleanup at restart and automatic Lid Closed Mode limits being what it loses.
 
 ---
 
@@ -86,7 +85,7 @@ marker is the only thing that lets the next launch recover.
 
 ```bash
 swift build -c debug          # or -c release
-swift test                    # 60 tests, no privileged calls, no real state file touched
+swift test                    # 69 tests, no privileged calls, no real state file touched
 ./scripts/install.sh          # build + bundle + sign + install app, helper and daemon
 ./scripts/uninstall.sh        # removes all of it, restoring sleep first
 ./scripts/state.sh            # read-only: what the app is actually doing right now
@@ -108,9 +107,11 @@ user, with the app still believing it owned the override.
 |------|------|
 | `Sources/LidClosedApp.swift` | `@main` entry point |
 | `Sources/AppDelegate.swift` | Lifecycle; calls `PowerManager.shared.start()` |
-| `Sources/StatusBarController.swift` | Menu bar UI, `NSMenuDelegate`, cached system state |
+| `Sources/StatusBarController.swift` | Menu bar item, popover lifecycle, cached system state |
 | `Sources/PowerManager.swift` | The state machine — activation, recovery, signal handling |
 | `Sources/AwakeKeeper.swift` | The `caffeinate` option — independent of `PowerManager` |
+| `Sources/SessionLimits.swift` | Per-mode limits and Keep Awake threshold decisions |
+| `Sources/LidClosedPanel.swift` | SwiftUI panel with mode switches and inline session limits |
 | `Sources/InstanceLock.swift` | `flock` guaranteeing a single running instance |
 | `Sources/CommandRunner.swift` | Seam: plain process execution |
 | `Sources/PrivilegedCommandRunner.swift` | Seam: the `with administrator privileges` path |
@@ -118,7 +119,7 @@ user, with the app still believing it owned the override.
 | `Sources/UserNotifier.swift` | Seam: modal alerts |
 | `scripts/lidclosed-helper.sh` | Root-owned helper: `enable` / `disable` / `cleanup` / `battery-guard` |
 | `Resources/com.akwnnwastaken.LidClosed.cleanup.plist` | The boot-time LaunchDaemon |
-| `Resources/com.akwnnwastaken.LidClosed.batteryguard.plist` | The every-minute low-battery LaunchDaemon |
+| `Resources/com.akwnnwastaken.LidClosed.batteryguard.plist` | The every-minute session guard LaunchDaemon |
 | `scripts/uninstall.sh` | Removes app, helper, daemon, markers — sleep restored first |
 
 Installed layout for the out-of-bundle pieces:
@@ -129,6 +130,7 @@ Installed layout for the out-of-bundle pieces:
 | `/Library/LaunchDaemons/com.akwnnwastaken.LidClosed.cleanup.plist` | `root:wheel` 644 |
 | `/Library/LaunchDaemons/com.akwnnwastaken.LidClosed.batteryguard.plist` | `root:wheel` 644 |
 | `/var/db/com.akwnnwastaken.LidClosed.active` | `root:wheel` 600, written by the helper |
+| `/var/db/com.akwnnwastaken.LidClosed.lock` | Root-owned lock for helper operations |
 
 The seams exist so the state machine is testable without triggering a real authentication
 dialog, spawning a real child process, or opening a modal window. Anything new that touches
@@ -194,14 +196,13 @@ Each of these was a real bug once. See [WALKTHROUGH.md](WALKTHROUGH.md) for the 
 14. **Boot cleanup never acts while an instance is alive.** The helper's `cleanup` checks
     `pgrep -x LidClosed` before touching anything. At boot that check is free; it exists for
     `launchctl bootstrap` during a re-install.
-15. **The battery guard acts while an instance is alive, and the threshold lives only in the
-    helper.** It is the opposite of invariant 14 on purpose: a live lid-closed session on a
-    flat-running battery is the case it exists for. The app learns about it by reading
-    `pmset` (`syncStateWithSystem`, also run on wake), not by being told. `LOW_BATTERY_PERCENT`
-    in `lidclosed-helper.sh` drives both the guard and the refusal in `enable`, through one
-    `battery_low` function; the `battery-low` subcommand exposes that decision, read-only, so
-    `BatteryGuardTests` can run the real script without root. Do not add environment overrides
-    to the helper to make it testable — it runs as root.
+15. **The session guard acts even while an instance is alive.** The helper stores the active
+    deadline, battery threshold, and thermal level in the root-owned marker. The daemon
+    never reads user preferences, and an older timestamp-only marker keeps the 20% battery
+    guard. The helper serializes its own enable, disable, and restore operations; it validates
+    arguments before writing a marker, and checks for an external override before enabling.
+    The direct fallback stays available for the original mode; custom limits require a
+    compatible helper and loaded session daemon. Keep Awake enforces its own limits in the app.
 
 ---
 
