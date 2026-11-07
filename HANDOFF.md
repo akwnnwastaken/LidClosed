@@ -1,8 +1,8 @@
 # HANDOFF
 
 Snapshot of where the work stands, so a fresh session can pick up without re-deriving
-context. **The session limits and menu bar panel below are prepared for `v1.2.0`,
-based on `b71af1b` (`v1.1.0`).**
+context. **The session limits and menu bar panel below were built from `682b765`
+and installed locally as `v1.2.0`.**
 
 If the log has moved past that, only the round-by-round narrative below is behind — the design
 invariants in [AGENTS.md](AGENTS.md) and the open items in [TODO.md](TODO.md) are maintained
@@ -37,6 +37,7 @@ Narrative of every change: [WALKTHROUGH.md](WALKTHROUGH.md) — the most recent 
 Everything still open, all of it by choice: [TODO.md](TODO.md).
 
 ```
+682b765  Add session limits and menu bar panel for LidClosed 1.2.0
 b71af1b  Point the handoff at the battery guard commit
 da087e5  Add a battery guard for Lid Closed Mode
 4f1fa49  Make the handoff self-orienting for a fresh session  (v1.0.0)
@@ -63,6 +64,9 @@ question. **`453eca3`'s conclusion is the correct one.** WALKTHROUGH.md §8 has 
 
 ## What changed most recently
 
+**Release workflow.** Pull requests and pushes to `main` run the macOS tests.
+After a passing push, a changed bundle version triggers a matching tag and GitHub Release.
+
 **Version display.** The panel footer reads the release version from the bundle.
 The installer preserves the version in `Resources/Info.plist` and records the build
 number and commit separately. Older tags no longer override the version on new builds.
@@ -85,8 +89,8 @@ original mode; custom limits are refused until the new guard is available.
 The suite passed 69 tests. An isolated native dialog accepted a valid custom duration and
 kept the form open on invalid input. A helper run against mock system commands verified
 activation, all three restore conditions, legacy markers, external ownership, and boot cleanup.
-The release bundle was built and signed; the new helper was not installed on the machine.
-See “Next up” for live verification.
+The release bundle and new helper were installed and the guard loaded. See “Next up”
+for live verification of the session limits on hardware.
 
 Historical v1.1.0 behavior:
 

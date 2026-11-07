@@ -215,6 +215,8 @@ To see what the app is doing at any moment:
 
 It is read-only, and reports the running instance, both switches, the state file, the display timer, which build is installed, whether the helper, both daemons and the boot marker are in place, and the current battery level. The menu bar panel shows the version from `Resources/Info.plist`; the installer also records the build number and commit when run from a git checkout.
 
+To publish a version, change `CFBundleShortVersionString` in `Resources/Info.plist` and merge the change into `main`. GitHub Actions runs the macOS tests, then creates the matching `vX.Y.Z` tag and a GitHub Release with generated notes. Merges that keep the same version skip publication.
+
 `./scripts/uninstall.sh` removes everything, in an order that cannot strand a disabled-sleep setting.
 
 ## License
