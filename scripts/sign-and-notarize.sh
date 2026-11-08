@@ -93,6 +93,9 @@ notarize "$scratch/submission.zip"
 xcrun stapler staple "$app"
 xcrun stapler validate "$app"
 spctl --assess --type execute --verbose=4 "$app"
+# Bind the repackaged app to the exact signed executable and metadata before calling a builder.
+app_digest=$(shasum -a 256 < "$app/Contents/MacOS/$exe")
+plist_digest=$(shasum -a 256 < "$plist")
 if [[ -n "$package_builder" ]]; then
   # Builder receives no certificate password or notary credentials.
   "$package_builder" "$app" "${tag#v}" "$output" "$keychain" "$APPLE_INSTALLER_IDENTITY"
@@ -109,6 +112,8 @@ else
   ditto -x -k "$output" "$scratch/final"
   final_app="$scratch/final/${app##*/}"
 fi
+[[ "$(shasum -a 256 < "$final_app/Contents/MacOS/$exe")" == "$app_digest" ]] || die 'Final app executable changed'
+[[ "$(shasum -a 256 < "$final_app/Contents/Info.plist")" == "$plist_digest" ]] || die 'Final app bundle metadata changed'
 verify_app "$final_app"
 xcrun stapler validate "$final_app"
 spctl --assess --type execute --verbose=4 "$final_app"
