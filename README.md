@@ -75,7 +75,7 @@ Keep Awake checks every five seconds while active and on wake. Lid Closed Mode r
 - **Cleanup at Boot** — `scripts/install.sh` also installs a small root-owned helper and a LaunchDaemon that runs once at every boot. If a previous session left sleep disabled, the daemon restores it before you log in. This covers every way the Mac can go down — restart, shutdown, kernel panic, power loss, a flat battery — and is what stops the setting from outliving the session that asked for it. It only ever undoes an override LidClosed marked as its own, and does nothing while LidClosed is running.
 - **Session Guard** — The full installer adds a second LaunchDaemon that restores sleep when Lid Closed Mode reaches a session limit. It reads the root-owned marker and checks the system state once a minute. This lets it work with the lid closed, without an administrator prompt at the end of the session.
 - **Single Instance** — Only one copy runs at a time. A second instance would see the first one's state file, mistake the live override for a leftover, and try to undo it.
-- **Security** — The installation script installs the bundle with root ownership (`root:wheel`), so a process running as your user cannot swap the executable and inherit the root privileges the app requests. The bundle is also ad-hoc signed, which makes accidental corruption detectable — note that ad-hoc signatures are not a defence against a determined local attacker, since anyone can re-sign without a certificate.
+- **Security** — The installation script installs the bundle with root ownership (`root:wheel`), so processes without write access to the bundle cannot edit its files in place. The parent directory’s permissions also matter for replacement protection. The bundle is also ad-hoc signed, which makes accidental corruption detectable — note that ad-hoc signatures are not a defence against a determined local attacker, since anyone can re-sign without a certificate.
 
 > [!NOTE]
 > This applies to **Lid Closed Mode only**. Restoring sleep needs root, and at logout there is nobody to type a password, so the app itself cannot clean up on the way out — the boot daemon above is what does it instead, on the way back in.
@@ -84,7 +84,13 @@ Keep Awake checks every five seconds while active and on wake. Lid Closed Mode r
 
 ## Installation
 
-### Quick Install (Build + Install to /Applications)
+### Signed package
+
+For releases that include a Developer ID signed `LidClosed-<version>.pkg`, download it from
+[Releases](https://github.com/akwnnwastaken/LidClosed/releases), verify the accompanying SHA-256,
+then open it with Installer. The package installs the app, helper and both recovery services.
+
+### Source installation (development)
 
 ```bash
 git clone https://github.com/akwnnwastaken/LidClosed.git
@@ -92,7 +98,7 @@ cd LidClosed
 ./scripts/install.sh
 ```
 
-This builds the app, creates a signed `.app` bundle with an icon, and securely installs it to `/Applications` (requires `sudo`). After installation, you can find it with **Spotlight** (Cmd+Space → "LidClosed").
+This builds and ad hoc signs the app and installs it to `/Applications` (requires `sudo`). Use a trusted source checkout for development; the signed package is the production installer. After installation, you can find it with **Spotlight** (Cmd+Space → "LidClosed").
 
 It also installs three small pieces outside the app, all owned by `root`:
 
@@ -217,7 +223,7 @@ To see what the app is doing at any moment:
 
 It is read-only, and reports the running instance, both switches, the state file, the display timer, which build is installed, whether the helper, both daemons and the boot marker are in place, and the current battery level. The menu bar panel shows the version from `Resources/Info.plist`; the installer also records the build number and commit when run from a git checkout.
 
-To publish a version, change `CFBundleShortVersionString` in `Resources/Info.plist` and merge the change into `main`. GitHub Actions runs the macOS tests, then creates the matching `vX.Y.Z` tag and a GitHub Release with generated notes. Merges that keep the same version skip publication.
+To prepare a signed PKG and draft, follow the [macOS production release runbook](docs/MACOS-RELEASE.md). A version bump alone never publishes a release.
 
 `./scripts/uninstall.sh` removes everything, in an order that cannot strand a disabled-sleep setting.
 

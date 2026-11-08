@@ -78,7 +78,7 @@ point and rejects a clock deadline that has passed. Battery and thermal settings
 remain next-session preferences.
 
 **Release workflow.** Pull requests and pushes to `main` run the macOS tests.
-After a passing push, a changed bundle version triggers a matching tag and GitHub Release.
+The release preparation branch replaces automatic public releases with a protected, signed PKG draft workflow. See [the runbook](docs/MACOS-RELEASE.md) for the separate approval and clean Mac acceptance gates.
 
 **Version display.** The panel footer reads the release version from the bundle.
 The installer preserves the version in `Resources/Info.plist` and records the build

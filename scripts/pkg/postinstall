@@ -1,0 +1,14 @@
+#!/bin/bash
+# Installer already installed sealed package contents at fixed root-owned paths.
+set -euo pipefail
+if [[ "$3" != / ]]; then
+  # Offline volumes must not affect the booted host. launchd loads both jobs at boot.
+  exit 0
+fi
+for name in cleanup batteryguard; do
+  label="com.akwnnwastaken.LidClosed.$name"
+  if /bin/launchctl print "system/$label" >/dev/null 2>&1; then
+    /bin/launchctl bootout "system/$label"
+  fi
+  /bin/launchctl bootstrap system "/Library/LaunchDaemons/$label.plist"
+done
